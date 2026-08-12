@@ -196,15 +196,20 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 timeout=30,
             )
             out = (r.stdout or "") + (r.stderr or "")
+            low = out.lower()
+            # Negative markers must veto every positive branch, so the
+            # positive alternatives are parenthesised: c2patool reports a
+            # missing manifest as "Error: No claim found", which contains
+            # the substring "claim" and would otherwise read as a hit.
+            no_manifest = "no claim" in low or "no jumbf" in low
             tools["c2patool"] = {
                 "available": True,
                 "returncode": r.returncode,
                 "snippet": out[:2000],
-                "has_manifest": "claim" in out.lower()
-                or "c2pa" in out.lower()
-                or "manifest" in out.lower()
-                and "no claim" not in out.lower()
-                and "no jumbf" not in out.lower(),
+                "has_manifest": (
+                    "claim" in low or "c2pa" in low or "manifest" in low
+                )
+                and not no_manifest,
             }
         except Exception as e:
             tools["c2patool"] = {"available": True, "error": str(e)}
