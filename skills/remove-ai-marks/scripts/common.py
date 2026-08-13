@@ -26,6 +26,31 @@ def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
 
 
+def _reconfigure_stream(stream: Any, errors: str) -> None:
+    """Switch a std stream to UTF-8 when it supports reconfiguration.
+
+    On Windows, redirected stdin/stdout/stderr default to the ANSI codepage
+    (e.g. cp1252), which cannot encode/decode the invisible Unicode
+    characters this tool exists to remove. UTF-8 covers every codepoint, so
+    text writes stop raising and piped input matches the file-path handling.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(encoding="utf-8", errors=errors)
+        except (OSError, ValueError):
+            pass
+
+
+def _configure_stdio() -> None:
+    _reconfigure_stream(sys.stdin, "surrogateescape")
+    _reconfigure_stream(sys.stdout, "backslashreplace")
+    _reconfigure_stream(sys.stderr, "backslashreplace")
+
+
+_configure_stdio()
+
+
 # Containers that get mistaken for text on the command line. Decoding one as
 # text walks compressed bytes and reports whatever codepoints fall out of them:
 # noise that tracks the compression, not the content. Worse, cleaning such a
@@ -222,9 +247,105 @@ def subprocess_rlimits() -> None:
         pass
 
 
+# subprocess.run(preexec_fn=...) is POSIX-only; on Windows the argument
+# itself raises ValueError before the callable runs. Windows resource
+# limiting would need a Job Object (pywin32), which is out of scope.
+subprocess_preexec_fn = subprocess_rlimits if os.name == "posix" else None
+
+
 def emit_json(data: Any) -> None:
     json.dump(data, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
+
+
+CONFIDENCE_LEVELS = (
+    "confirmed",
+    "probable",
+    "informational",
+    "likely_false_positive",
+)
+
+
+def classify_finding_confidence(finding: str) -> str:
+    """Classify a scanner finding by confidence.
+
+    The four buckets are a heuristic mapping of *how strong* a finding is:
+
+    - confirmed: a recognized provenance structure (C2PA/JUMBF manifest, or a
+      parsed field such as digitalSourceType / trainedAlgorithmicMedia).
+    - probable: an AI/vendor marker found inside a recognized metadata
+      structure, but not a fully parsed provenance claim.
+    - informational: context-only notes (CMS generators, presence of an XMP
+      packet or customXml parts, unsupported/partial inspection).
+    - likely_false_positive: raw whole-file byte scans that can collide with
+      compressed image/stream data.
+
+    The mapping is intentionally conservative; a scanner finding is a signal,
+    not a verdict.
+    """
+    t = finding.lower()
+
+    if any(
+        s in t
+        for s in (
+            "c2patool reports",
+            "c2pa-related manifest",
+            "png chunk c2",
+            "png chunk cabx",
+            "png chunk jumb",
+            "png chunk jumd",
+            "jpeg app11 segment",
+            "digital_source_type",
+            "digitalsourcetype",
+            "trainedalgorithmicmedia",
+            "compositewithtrainedalgorithmicmedia",
+            "softwareagent",
+        )
+    ):
+        return "confirmed"
+
+    if t.startswith("info:") or any(
+        s in t
+        for s in (
+            "cms generator",
+            "customxml parts",
+            "xmp packet present",
+            "unsupported",
+            "not fully inspected",
+            "format not",
+            "svg <metadata> present",
+            "not a valid",
+            "truncated chunk",
+            "bad segment length",
+            "svg decode note",
+        )
+    ):
+        return "informational"
+
+    if "byte-scan" in t:
+        return "likely_false_positive"
+
+    if any(
+        s in t
+        for s in (
+            "ai:",
+            "marker:",
+            "meta:",
+            "frontmatter",
+            "json-ld",
+            "attr:",
+            "png ",
+            "jpeg app",
+            "exif",
+            "xmp",
+            "interesting",
+            "pdf-structured",
+            "layer-a",
+        )
+    ):
+        return "probable"
+
+    return "informational"
 
 
 def cleaned_path(src: Path, suffix: str = ".cleaned") -> Path:
@@ -245,5 +366,7 @@ def safe_arg(path: str) -> str:
     (e.g. exiftool's -@argfile), turning a crafted filename into argv injection.
     """
     if path.startswith("-"):
+        # './' also resolves correctly on Windows (Win32 accepts '/' as a
+        # path separator), so no platform branch is needed here.
         return "./" + path
     return path

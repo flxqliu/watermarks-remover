@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import MAX_INPUT_BYTES, emit_json, eprint, read_text_input  # noqa: E402
+from common import MAX_INPUT_BYTES, classify_finding_confidence, emit_json, eprint, read_text_input  # noqa: E402
 from container_meta import detect_container_format, inspect_container  # noqa: E402
 from image_meta import detect_format as detect_image_format  # noqa: E402
 from image_meta import inspect_image  # noqa: E402
@@ -87,7 +87,7 @@ def main() -> int:
             print(f"C2PA: {report.has_c2pa}")
             print(f"AI metadata: {report.has_ai_metadata}")
             for f in report.findings:
-                print(f"  - {f}")
+                print(f"  - [{classify_finding_confidence(f)}] {f}")
         return 0 if not (report.has_c2pa or report.has_ai_metadata) else 1
 
     report = inspect_container(args.path)
@@ -100,7 +100,7 @@ def main() -> int:
         print(f"C2PA: {report.has_c2pa}")
         print(f"AI metadata: {report.has_ai_metadata}")
         for f in report.findings:
-            print(f"  - {f}")
+            print(f"  - [{classify_finding_confidence(f)}] {f}")
     return 0 if not (report.has_c2pa or report.has_ai_metadata) else 1
 
 
