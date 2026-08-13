@@ -77,6 +77,24 @@ python3 "$SCRIPTS/inspect_image.py" shot.png
 python3 "$SCRIPTS/clean_image.py" shot.png -o shot.cleaned.png
 ```
 
+### Text tools refuse binary input
+
+`inspect_text.py`, `clean_text.py` and `rewrite_text.py` operate on text. Pointed
+at a `.docx`, `.pdf` or image they used to decode the compressed bytes and report
+whatever codepoints fell out — noise that tracks the compression, not the
+content — and `clean_text.py` then wrote those mangled bytes back, destroying the
+file. They now refuse binary input and name the tool that handles it:
+
+```bash
+python3 "$SCRIPTS/inspect_text.py" report.docx
+# refusing to treat report.docx as text: it looks like a ZIP container (DOCX, ODT, …).
+# Use inspect_file.py / clean_file.py, which route by format,
+# or pass --force-text to scan the raw bytes anyway.
+```
+
+Detection is by magic number plus a control-byte ratio, so text in encodings
+other than UTF-8 keeps working. `--force-text` overrides it everywhere.
+
 ## Optional SynthID pixel scoring
 
 `inspect_image.py` and `clean_image.py` can report a pixel-domain SynthID
