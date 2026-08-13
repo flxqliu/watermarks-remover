@@ -112,7 +112,28 @@ def looks_binary(data: bytes) -> str | None:
     return None
 
 
-def guard_binary(data: bytes, origin: str, *, allow_binary: bool = False) -> None:
+# Advice for the text-only scripts: another tool in this repo handles the file.
+TEXT_TOOL_ADVICE = (
+    "Use inspect_file.py / clean_file.py, which route by format,",
+    "or pass --force-text to scan the raw bytes anyway.",
+)
+
+# Advice for the routers themselves. They *are* inspect_file.py / clean_file.py,
+# and classify() has already ruled out every known container, so pointing back
+# at them would be circular.
+ROUTER_ADVICE = (
+    "These bytes match no supported text, image or container format.",
+    "Pass --force-text to handle them as text anyway, or --as to force a format.",
+)
+
+
+def guard_binary(
+    data: bytes,
+    origin: str,
+    *,
+    allow_binary: bool = False,
+    advice: tuple[str, ...] | None = None,
+) -> None:
     """Refuse binary input for the text-only tools unless explicitly overridden."""
     if allow_binary:
         return
@@ -120,14 +141,19 @@ def guard_binary(data: bytes, origin: str, *, allow_binary: bool = False) -> Non
     if kind is None:
         return
     eprint(f"refusing to treat {origin} as text: it looks like {kind}.")
-    eprint("Use inspect_file.py / clean_file.py, which route by format,")
-    eprint("or pass --force-text to scan the raw bytes anyway.")
+    for line in advice or TEXT_TOOL_ADVICE:
+        eprint(line)
     raise SystemExit(2)
 
 
-def read_text_input(path: str | None, *, allow_binary: bool = False) -> str:
+def read_text_input(
+    path: str | None,
+    *,
+    allow_binary: bool = False,
+    advice: tuple[str, ...] | None = None,
+) -> str:
     if path is None or path == "-":
-        return _read_stdin_capped(allow_binary=allow_binary)
+        return _read_stdin_capped(allow_binary=allow_binary, advice=advice)
     p = Path(path)
     try:
         size = p.stat().st_size
@@ -137,29 +163,59 @@ def read_text_input(path: str | None, *, allow_binary: bool = False) -> str:
         eprint(f"refusing input larger than {MAX_INPUT_BYTES} bytes: {path}")
         raise SystemExit(2)
     data = p.read_bytes()
-    guard_binary(data, str(path), allow_binary=allow_binary)
+    guard_binary(data, str(path), allow_binary=allow_binary, advice=advice)
     return data.decode("utf-8", errors="surrogateescape")
 
 
-def _read_stdin_capped(*, allow_binary: bool = False) -> str:
-    """Read stdin with a hard cap (uncapped stdin was a memory-DoS hole)."""
-    chunks: list[str] = []
+def _read_stdin_capped(
+    *,
+    allow_binary: bool = False,
+    advice: tuple[str, ...] | None = None,
+) -> str:
+    """Read stdin with a hard cap (uncapped stdin was a memory-DoS hole).
+
+    Read the raw byte stream rather than the decoded text, so the binary sniff
+    sees the real octets. Going through the text layer first makes detection
+    depend on the console codec: under cp1252 a PNG's leading 0x89 comes back
+    as 0xe2 0x80 0xb0 and the magic number is gone before we look. That the
+    decode is UTF-8 today is only true while _configure_stdio() succeeds, and
+    its reconfigure() is deliberately best-effort.
+    """
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is None:
+        # A replaced or non-binary stdin (pytest capture, custom harness).
+        # Fall back to the text layer; the sniff is then codec-dependent.
+        text = sys.stdin.read()
+        if len(text.encode("utf-8", errors="surrogateescape")) > MAX_STDIN_BYTES:
+            eprint(f"refusing stdin input larger than {MAX_STDIN_BYTES} bytes")
+            raise SystemExit(2)
+        guard_binary(
+            text[:BINARY_SNIFF_BYTES].encode("utf-8", errors="surrogateescape"),
+            "stdin",
+            allow_binary=allow_binary,
+            advice=advice,
+        )
+        return text
+
+    chunks: list[bytes] = []
     total = 0
-    checked = False
     while True:
-        chunk = sys.stdin.read(1 << 20)
+        chunk = stream.read(1 << 20)
         if not chunk:
             break
+        if not chunks:
+            guard_binary(
+                chunk[:BINARY_SNIFF_BYTES],
+                "stdin",
+                allow_binary=allow_binary,
+                advice=advice,
+            )
         total += len(chunk)
         if total > MAX_STDIN_BYTES:
             eprint(f"refusing stdin input larger than {MAX_STDIN_BYTES} bytes")
             raise SystemExit(2)
         chunks.append(chunk)
-        if not checked:
-            checked = True
-            head = chunk[:BINARY_SNIFF_BYTES].encode("utf-8", errors="surrogateescape")
-            guard_binary(head, "stdin", allow_binary=allow_binary)
-    return "".join(chunks)
+    return b"".join(chunks).decode("utf-8", errors="surrogateescape")
 
 
 def write_text_output(text: str, path: str | None) -> None:
