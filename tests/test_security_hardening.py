@@ -188,3 +188,12 @@ def test_read_stdin_under_cap_ok(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(common, "MAX_STDIN_BYTES", 1024)
     monkeypatch.setattr(sys, "stdin", io.StringIO("hello stdin"))
     assert read_text_input(None) == "hello stdin"
+
+
+def test_reconfigure_stream_writes_utf8():
+    buf = io.BytesIO()
+    stream = io.TextIOWrapper(buf, encoding="cp1252")
+    common._reconfigure_stream(stream, "backslashreplace")
+    stream.write("\u200b")
+    stream.flush()
+    assert buf.getvalue() == "\u200b".encode("utf-8")
