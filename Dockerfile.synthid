@@ -6,10 +6,19 @@
 # The upstream code is fetched from source at build time and is NOT
 # redistributed by this repository. Users must comply with the upstream
 # project's non-commercial Research License.
+#
+# Vendored fork hardening:
+#   - base image pinned by digest (no moving tag drift)
+#   - upstream checkout pinned to a commit SHA (no moving branch)
+#   - deps pinned exactly in requirements-synthid-scorer.txt
 
-FROM python:3.11-slim
+# Pinned upstream commit (2026-07-17). Keep in sync with setup_synthid.sh.
+ARG REVERSE_SYNTHID_REF=b11083676fd3ee3ff97ce9d03c0e409e46905902
 
-ARG REVERSE_SYNTHID_REF=main
+# python:3.11-slim linux/amd64 digest.
+FROM python:3.11-slim@sha256:78b39ef14d8e2b4d71f8dc304f1328c37df95fe0ef99477c2ae6bd3d03784553
+
+ARG REVERSE_SYNTHID_REF
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -19,9 +28,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --filter=blob:none --sparse \
-        --branch "${REVERSE_SYNTHID_REF}" \
         https://github.com/aloshdenny/reverse-SynthID.git /opt/reverse-synthid \
     && cd /opt/reverse-synthid \
+    && git fetch --depth 1 origin "${REVERSE_SYNTHID_REF}" \
+    && git checkout --detach "${REVERSE_SYNTHID_REF}" \
     && git sparse-checkout set --no-cone \
         '/src/' \
         '/artifacts/spectral_codebook_v4.npz' \

@@ -11,7 +11,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_DIR="${REVERSE_SYNTHID_DIR:-$HOME/reverse-SynthID}"
 DIR=""
-REF="main"
+# Pinned upstream commit (2026-07-17). Do not point at a moving branch.
+REF="b11083676fd3ee3ff97ce9d03c0e409e46905902"
 PYTHON="${PYTHON:-python3}"
 FULL=0
 
@@ -24,7 +25,7 @@ the Python dependencies required by score_synthid.py.
 
 Options:
   --dir PATH     checkout directory (default: $REVERSE_SYNTHID_DIR or ~/reverse-SynthID)
-  --ref REF      git ref to clone (default: main)
+  --ref REF      git ref to checkout (default: pinned commit SHA)
   --full         install upstream requirements.txt (adds torch/diffusers for VAE bypass)
   --python PY    Python interpreter used to create the venv (default: python3)
 EOF
@@ -69,15 +70,22 @@ else
 fi
 
 if [[ ! -d "$DIR/.git" ]]; then
-  echo "Cloning reverse-SynthID into $DIR"
-  git clone --depth 1 --filter=blob:none --sparse --branch "$REF" \
+  echo "Cloning reverse-SynthID into $DIR (pinned ref: $REF)"
+  git clone --depth 1 --filter=blob:none --sparse \
     https://github.com/aloshdenny/reverse-SynthID.git "$DIR"
+  git -C "$DIR" fetch --depth 1 origin "$REF"
+  git -C "$DIR" checkout --detach "$REF"
   git -C "$DIR" sparse-checkout set --no-cone \
     '/src/' \
     '/artifacts/spectral_codebook_v4.npz' \
     '/requirements.txt' \
     '/LICENSE' \
     '/README.md'
+  HEAD_SHA="$(git -C "$DIR" rev-parse HEAD)"
+  if [[ "$HEAD_SHA" != "$REF" ]]; then
+    echo "error: expected pinned ref $REF, got $HEAD_SHA" >&2
+    exit 1
+  fi
 else
   echo "Using existing checkout: $DIR"
 fi
