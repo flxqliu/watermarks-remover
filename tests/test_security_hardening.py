@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -123,6 +124,15 @@ def test_safe_write_bytes_creates_parent_dirs(tmp_path: Path):
     dest = tmp_path / "a" / "b" / "out.bin"
     safe_write_bytes(dest, b"\x00\x01")
     assert dest.read_bytes() == b"\x00\x01"
+
+
+def test_safe_write_bytes_without_fchmod(tmp_path: Path, monkeypatch):
+    # os.fchmod is POSIX-only; on Windows the write must still go through.
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    dest = tmp_path / "out.bin"
+    safe_write_bytes(dest, b"payload")
+    assert dest.read_bytes() == b"payload"
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_backup_path_creates_bak_copy(tmp_path: Path):

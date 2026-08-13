@@ -89,8 +89,10 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
     fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".tmp", dir=str(parent))
     try:
         # mkstemp creates 0600; restore the umask-default mode so outputs
-        # keep normal permissions.
-        os.fchmod(fd, _default_file_mode())
+        # keep normal permissions. Windows has no fchmod and no POSIX mode
+        # bits to restore, so the call is skipped there.
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, _default_file_mode())
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
