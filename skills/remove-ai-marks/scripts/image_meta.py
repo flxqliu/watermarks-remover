@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from common import safe_arg, safe_write_bytes, subprocess_rlimits, which
+from common import safe_arg, safe_write_bytes, subprocess_preexec_fn, which
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -201,7 +201,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                preexec_fn=subprocess_rlimits,
+                preexec_fn=subprocess_preexec_fn,
             )
             out = (r.stdout or "") + (r.stderr or "")
             low = out.lower()
@@ -232,7 +232,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                preexec_fn=subprocess_rlimits,
+                preexec_fn=subprocess_preexec_fn,
             )
             out = r.stdout or ""
             interesting = [
@@ -284,7 +284,7 @@ def run_synthid_score(
             capture_output=True,
             text=True,
             timeout=180,
-            preexec_fn=subprocess_rlimits,
+            preexec_fn=subprocess_preexec_fn,
         )
     except Exception as e:
         return {"available": False, "error": str(e)}
@@ -503,7 +503,7 @@ def clean_image(
                 text=True,
                 timeout=60,
                 check=False,
-                preexec_fn=subprocess_rlimits,
+                preexec_fn=subprocess_preexec_fn,
             )
             actions.append("exiftool -all= pass")
         except Exception as e:

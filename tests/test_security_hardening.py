@@ -99,11 +99,19 @@ def test_inspect_docx_with_ai_markers_does_not_crash():
 # ---------------------------------------------------------------------------
 
 
+def _make_symlink(dest: Path, target: Path) -> None:
+    """Create a symlink, skipping where the platform denies the privilege."""
+    try:
+        dest.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
 def test_safe_write_refuses_symlink_destination(tmp_path: Path):
     victim = tmp_path / "victim.txt"
     victim.write_text("PRECIOUS DATA")
     dest = tmp_path / "out.txt"
-    dest.symlink_to(victim)
+    _make_symlink(dest, victim)
     with pytest.raises(OSError):
         safe_write_text(dest, "cleaned content")
     # The victim must be untouched and no temp litter may remain.
@@ -150,7 +158,7 @@ def test_backup_path_refuses_symlinked_bak(tmp_path: Path):
     bak = tmp_path / "doc.md.bak"
     victim = tmp_path / "victim.txt"
     victim.write_text("PRECIOUS")
-    bak.symlink_to(victim)
+    _make_symlink(bak, victim)
     with pytest.raises(SystemExit):
         backup_path(src)
     assert victim.read_text() == "PRECIOUS"

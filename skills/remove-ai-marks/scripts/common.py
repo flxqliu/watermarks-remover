@@ -141,6 +141,12 @@ def subprocess_rlimits() -> None:
         pass
 
 
+# subprocess.run(preexec_fn=...) is POSIX-only; on Windows the argument
+# itself raises ValueError before the callable runs. Windows resource
+# limiting would need a Job Object (pywin32), which is out of scope.
+subprocess_preexec_fn = subprocess_rlimits if os.name == "posix" else None
+
+
 def emit_json(data: Any) -> None:
     json.dump(data, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
@@ -164,5 +170,7 @@ def safe_arg(path: str) -> str:
     (e.g. exiftool's -@argfile), turning a crafted filename into argv injection.
     """
     if path.startswith("-"):
+        # './' also resolves correctly on Windows (Win32 accepts '/' as a
+        # path separator), so no platform branch is needed here.
         return "./" + path
     return path

@@ -13,7 +13,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from common import safe_arg, safe_write_bytes, safe_write_text, subprocess_rlimits, which
+from common import safe_arg, safe_write_bytes, safe_write_text, subprocess_preexec_fn, which
 from image_meta import AI_META_HINTS, C2PA_MARKERS, run_optional_tools
 
 # Frontmatter / meta keys that often carry AI provenance
@@ -634,7 +634,7 @@ def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
                 text=True,
                 timeout=60,
                 check=False,
-                preexec_fn=subprocess_rlimits,
+                preexec_fn=subprocess_preexec_fn,
             )
             actions.append(f"exiftool -all= (rc={r.returncode})")
         except Exception as e:
