@@ -81,8 +81,9 @@ def main() -> int:
         )
         report = inspect_text(text, aggressive=args.aggressive)
         if args.json:
-            emit_json({"kind": "text", **report.to_dict()})
+            emit_json({"kind": "text", "path": str(args.path), **report.to_dict()})
         else:
+            print(f"Path: {args.path}")
             print(f"Kind: text")
             print(human_report(report))
         return 0 if report.suspicious_total == 0 else 1
@@ -92,8 +93,8 @@ def main() -> int:
         if args.json:
             emit_json({"kind": "image", **report.to_dict()})
         else:
-            print(f"Kind: image")
             print(f"Path: {report.path}")
+            print(f"Kind: image")
             print(f"Format: {report.format}")
             print(f"C2PA: {report.has_c2pa}")
             print(f"AI metadata: {report.has_ai_metadata}")
@@ -105,8 +106,8 @@ def main() -> int:
     if args.json:
         emit_json({"kind": "container", **report.to_dict()})
     else:
-        print(f"Kind: container")
         print(f"Path: {report.path}")
+        print(f"Kind: container")
         print(f"Format: {report.format}")
         print(f"C2PA: {report.has_c2pa}")
         print(f"AI metadata: {report.has_ai_metadata}")
