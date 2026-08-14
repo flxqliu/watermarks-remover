@@ -76,6 +76,7 @@ def main() -> int:
         return 2
 
     kind = args.force_type if args.force_type != "auto" else classify(args.path)
+    file_label = str(args.path.resolve())
 
     if kind == "text":
         text = read_text_input(
@@ -85,18 +86,20 @@ def main() -> int:
         )
         report = inspect_text(text, aggressive=args.aggressive)
         if args.json:
-            emit_json({"kind": "text", **report.to_dict()})
+            emit_json({"kind": "text", "path": file_label, **report.to_dict()})
         else:
-            print(f"Kind: text")
+            print(f"File: {file_label}")
+            print("Kind: text")
             print(human_report(report))
         return 0 if report.suspicious_total == 0 else 1
 
     if kind == "image":
         report = inspect_image(args.path)
         if args.json:
-            emit_json({"kind": "image", **report.to_dict()})
+            emit_json({"kind": "image", "path": file_label, **report.to_dict()})
         else:
-            print(f"Kind: image")
+            print(f"File: {file_label}")
+            print("Kind: image")
             print(f"Path: {report.path}")
             print(f"Format: {report.format}")
             print(f"C2PA: {report.has_c2pa}")
@@ -107,9 +110,10 @@ def main() -> int:
 
     report = inspect_container(args.path)
     if args.json:
-        emit_json({"kind": "container", **report.to_dict()})
+        emit_json({"kind": "container", "path": file_label, **report.to_dict()})
     else:
-        print(f"Kind: container")
+        print(f"File: {file_label}")
+        print("Kind: container")
         print(f"Path: {report.path}")
         print(f"Format: {report.format}")
         print(f"C2PA: {report.has_c2pa}")
