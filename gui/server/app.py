@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import bridge
+from . import bridge, picker
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 MAX_BODY = bridge.MAX_INPUT_BYTES + (1 << 20)
@@ -100,21 +100,27 @@ def lookup(fid: str) -> dict[str, Any] | None:
     return dict(entry) if entry else None
 
 
-def resolve_ref(ref: dict[str, Any]) -> tuple[Path, str]:
-    """Resolve a client file reference to (path, display name).
+def resolve_ref(ref: dict[str, Any]) -> tuple[Path, str, bool]:
+    """Resolve a client file reference to (path, display name, is_local).
 
-    Every file the client knows about was registered by an upload, so a
-    reference is an id we handed out — never a path the client made up.
+    ``is_local`` means the user picked a real file on disk (so we may offer to
+    write next to it); uploads live in the throwaway work directory.
     """
     if not isinstance(ref, dict):
         raise ValueError("Missing file reference")
     fid = ref.get("id")
-    if not fid:
-        raise ValueError("Missing file reference")
-    entry = lookup(str(fid))
-    if not entry:
-        raise ValueError("That file is no longer available — add it again.")
-    return Path(entry["path"]), entry["name"]
+    if fid:
+        entry = lookup(str(fid))
+        if not entry:
+            raise ValueError("That file is no longer available — add it again.")
+        return Path(entry["path"]), entry["name"], entry["origin"] == "local"
+    raw = ref.get("path")
+    if raw:
+        p = Path(str(raw)).expanduser()
+        if not p.is_file():
+            raise ValueError(f"Not a file: {p}")
+        return p.resolve(), p.name, True
+    raise ValueError("Missing file reference")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -312,6 +318,30 @@ def api_refs(h: Handler) -> None:
     h._json({"docs": bridge.reference_docs()})
 
 
+def api_pick(h: Handler) -> None:
+    data = h._payload()
+    result = picker.pick(str(data.get("mode") or "files"), str(data.get("title") or "Choose a file"))
+    out = []
+    for raw in result.get("paths", []):
+        p = Path(raw)
+        if not p.is_file() and str(data.get("mode")) != "folder":
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        out.append(
+            {
+                "id": register(p, p.name, origin="local"),
+                "name": p.name,
+                "path": str(p),
+                "size": size,
+                "local": True,
+            }
+        )
+    h._json({"available": result.get("available", False), "error": result.get("error"), "files": out})
+
+
 def api_upload(h: Handler) -> None:
     # The browser percent-encodes the name: HTTP headers cannot carry raw UTF-8.
     name = _safe_name(unquote(h.headers.get("X-WM-Filename") or "dropped-file"))
@@ -336,7 +366,7 @@ def api_upload(h: Handler) -> None:
 
 def api_inspect(h: Handler) -> None:
     data = h._payload()
-    path, name = resolve_ref(data.get("file") or {})
+    path, name, is_local = resolve_ref(data.get("file") or {})
     report = bridge.inspect_file(
         path,
         aggressive=bool(data.get("aggressive")),
@@ -344,12 +374,15 @@ def api_inspect(h: Handler) -> None:
         synthid=bool(data.get("synthid")),
     )
     report["name"] = name
+    report["local"] = is_local
+    report["display_path"] = str(path) if is_local else name
     h._json(report)
 
 
 def api_clean(h: Handler) -> None:
     data = h._payload()
-    path, name = resolve_ref(data.get("file") or {})
+    path, name, is_local = resolve_ref(data.get("file") or {})
+    save = str(data.get("save") or "copy")
     opts = {
         "force_type": str(data.get("as") or "auto"),
         "nfkc": bool(data.get("nfkc")),
@@ -360,13 +393,23 @@ def api_clean(h: Handler) -> None:
         "convert_nbsp": bool(data.get("convert_nbsp")),
     }
 
-    folder = WORKDIR / secrets.token_urlsafe(8)
-    folder.mkdir(parents=True, exist_ok=True)
-    out_path = folder / bridge.cleaned_path(Path(name)).name
-    result = bridge.clean_file(path, out_path, **opts)
+    if save == "inplace":
+        if not is_local:
+            raise ValueError("Overwriting only works for files opened with Browse.")
+        result = bridge.backup_then_clean(path, **opts)
+        out_path = path
+    else:
+        if is_local and save == "copy":
+            out_path = bridge.cleaned_path(path)
+        else:
+            folder = WORKDIR / secrets.token_urlsafe(8)
+            folder.mkdir(parents=True, exist_ok=True)
+            out_path = folder / bridge.cleaned_path(Path(name)).name
+        result = bridge.clean_file(path, out_path, **opts)
 
     result["download_id"] = register(out_path, Path(out_path).name, origin="output")
     result["output_name"] = Path(out_path).name
+    result["saved_to_disk"] = is_local and save in ("copy", "inplace")
     result["name"] = name
     h._json(result)
 
@@ -449,6 +492,7 @@ def api_shutdown(h: Handler) -> None:
 ROUTES = {
     "/api/diagnostics": api_diagnostics,
     "/api/refs": api_refs,
+    "/api/pick": api_pick,
     "/api/upload": api_upload,
     "/api/inspect": api_inspect,
     "/api/clean": api_clean,

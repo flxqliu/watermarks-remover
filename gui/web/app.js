@@ -343,7 +343,7 @@ function renderList() {
     },
       el("div", { class: "file-name" },
         el("div", { class: "file-title", text: f.name }),
-        el("span", { class: "file-sub", text: bytes(f.size) })),
+        el("span", { class: "file-sub", text: `${bytes(f.size)}${f.local ? " · on disk" : ""}` })),
       el("span", { class: `chip ${chipClass}`, text: chipText }));
   }));
 }
@@ -464,7 +464,8 @@ function renderDetail() {
   }
 
   panel.append(el("div", { class: "detail-head" },
-    el("h2", { class: "detail-title", text: f.name })));
+    el("h2", { class: "detail-title", text: f.name }),
+    el("p", { class: "detail-path", text: f.displayPath || f.name })));
 
   if (f.status === "busy" || f.status === "working") {
     panel.append(el("div", { class: "skeleton" },
@@ -489,7 +490,7 @@ function renderDetail() {
     panel.append(verdictBand(
       c.residual ? "error" : "clean",
       c.residual ? "Cleaned, but signals remain" : "Cleaned",
-      "Ready to download."));
+      c.saved_to_disk ? `Saved to ${c.output}` : "Ready to download."));
   } else {
     panel.append(r.clean
       ? verdictBand("clean", "Nothing found",
@@ -567,6 +568,8 @@ async function inspectOne(f) {
       file: f.ref, aggressive: o.aggressive, as: o.as, synthid: o.synthid,
     });
     f.report = report;
+    f.displayPath = report.display_path;
+    f.local = report.local;
     f.status = report.clean ? "clean" : "found";
     f.error = null;
   } catch (e) {
@@ -582,6 +585,7 @@ async function cleanOne(f, button, override) {
   const o = { ...opts(), ...(override || {}) };
   const nbspBox = $(`#nbsp-${f.key}`);
   if (override && nbspBox && override.convert_nbsp == null) o.convert_nbsp = nbspBox.checked;
+  const save = $("#optSave").value;
 
   const label = button ? button.textContent : null;
   if (button) { button.disabled = true; button.textContent = "Working…"; }
@@ -599,6 +603,7 @@ async function cleanOne(f, button, override) {
       synthid: o.synthid,
       scrub_document_text: o.scrub_document_text,
       convert_nbsp: o.convert_nbsp,
+      save: f.local ? save : "download",
     });
     f.cleanOpts = o;
     f.status = "done";
@@ -606,6 +611,7 @@ async function cleanOne(f, button, override) {
       const after = await api("/api/inspect", {
         file: { id: f.clean.download_id }, aggressive: o.aggressive, as: o.as,
       });
+      after.display_path = f.displayPath;
       f.report = after;
     }
   } catch (e) {
@@ -624,6 +630,8 @@ function addFiles(entries) {
       key: ++keySeq,
       name: entry.name,
       size: entry.size,
+      local: !!entry.local,
+      displayPath: entry.path || entry.name,
       ref: { id: entry.id },
       status: "busy",
     };
@@ -666,7 +674,20 @@ dropzone.addEventListener("drop", (e) => uploadAll(Array.from(e.dataTransfer.fil
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => e.preventDefault());
 
-$("#browseBtn").addEventListener("click", () => $("#fileInput").click());
+$("#browseBtn").addEventListener("click", async () => {
+  try {
+    const res = await api("/api/pick", { mode: "files", title: "Choose files to check" });
+    if (!res.available) {
+      // No tkinter here, so fall back to the browser's own picker. That
+      // uploads a copy instead of reading the file where it sits.
+      $("#fileInput").click();
+      return;
+    }
+    if (res.files.length) addFiles(res.files);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 $("#fileInput").addEventListener("change", (e) => {
   const list = Array.from(e.target.files || []);
@@ -971,14 +992,17 @@ const INSTALL = {
   Windows: {
     exiftool: "winget install -e --id OliverBetz.ExifTool",
     c2patool: "cargo install c2patool",
+    tk: "Reinstall Python and tick “tcl/tk and IDLE”",
   },
   Darwin: {
     exiftool: "brew install exiftool",
     c2patool: "cargo install c2patool",
+    tk: "brew install python-tk",
   },
   Linux: {
     exiftool: "sudo apt install libimage-exiftool-perl",
     c2patool: "cargo install c2patool",
+    tk: "sudo apt install python3-tk",
   },
 };
 
@@ -1046,6 +1070,16 @@ async function loadSetup() {
         snippet(os === "Windows"
           ? "set REVERSE_SYNTHID_DIR=C:\\path\\to\\reverse-SynthID"
           : "export REVERSE_SYNTHID_DIR=~/reverse-SynthID")),
+
+      el("div", { class: "card" },
+        el("h3", {},
+          el("span", { text: "Native file dialogs" }),
+          el("span", { class: `status-pill ${d.native_dialogs ? "on" : "off"}`,
+            text: d.native_dialogs ? "available" : "missing" })),
+        el("p", { text: d.native_dialogs
+          ? "The Browse button opens your system file picker, which lets this app write cleaned files next to the originals."
+          : "Tkinter is not installed, so Browse uses the browser's own picker. That still works — it uploads a copy, so cleaned files come back as downloads rather than being written next to the original." }),
+        d.native_dialogs ? null : snippet(install.tk)),
     ];
 
     if (d.compat_notes && d.compat_notes.length) {

@@ -9,13 +9,22 @@ Works on **Windows, macOS and Linux**.
 
 ## Start it
 
-```bash
-python3 gui/launch.py
-```
+| Your system | What to do |
+| --- | --- |
+| **Windows** | Double-click **`WatermarksRemover.bat`** |
+| **macOS** | Double-click **`watermarks-remover.command`** |
+| **Linux** | `./watermarks-remover.command`, or `python3 gui/launch.py` |
 
 The app opens in its own window if you have [pywebview](https://pywebview.flowrl.com/)
 installed, and in your default browser otherwise. Both are the same app — the
 page is served from your own machine on `127.0.0.1`.
+
+On macOS and Linux the launcher needs its executable bit, which git only keeps
+if it was committed that way:
+
+```bash
+git update-index --chmod=+x gui/watermarks-remover.command
+```
 
 **Requirements:** Python 3.10 or newer, and nothing else. If Windows says Python
 is missing, install it from [python.org](https://www.python.org/downloads/) and
@@ -37,8 +46,13 @@ Drag files in, or press **Browse…**. Every file is scanned as it arrives and
 gets a verdict: *marks* or *clean*. Open one to see the findings, the exact
 hidden characters it contains, and where they sit in the text.
 
-**Clean this file** strips the marks and hands back a copy to download —
-`draft.md` → `draft.cleaned.md`. The original is never touched.
+**Clean this file** writes a stripped copy. Where it lands depends on *Options →
+When cleaning, save*:
+
+- **A cleaned copy next to the original** — `draft.md` → `draft.cleaned.md`
+- **Over the original** — keeps `draft.md.bak` as a backup
+- **Nothing — just let me download it** — the only option for dragged-in files,
+  because a drop gives the app the file's contents but not its location
 
 Handles PNG, JPEG, PDF, DOCX, ODT, SVG, HTML, Markdown and plain text. Batch
 work is fine: **Clean all**, then **Download all** for a zip.
@@ -161,8 +175,8 @@ want SynthID scoring.
   in your browser cannot drive it.
 - The only files the server will hand out are the three in `gui/web/`, listed in
   a table built at startup; a request path is never joined onto a directory.
-- Files you add are copied to a temporary folder that is deleted when the app
-  exits. Your originals are never modified.
+- Dragged-in files are copied to a temporary folder that is deleted when the app
+  exits. Files opened with **Browse** are read where they are.
 - No telemetry, no network access — except a rewrite backend you configure
   yourself.
 

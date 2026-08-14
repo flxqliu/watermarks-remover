@@ -517,6 +517,16 @@ def clean_file(
     return result
 
 
+def backup_then_clean(path: Path, **kwargs: Any) -> dict[str, Any]:
+    """In-place clean: keep the original as .bak, write the cleaned file over it."""
+    path = Path(path)
+    bak = common.backup_path(path)
+    result = clean_file(bak, path, **kwargs)
+    result["backup"] = str(bak)
+    result["input"] = str(path)
+    return result
+
+
 def cleaned_path(path: Path) -> Path:
     return common.cleaned_path(Path(path))
 
@@ -618,6 +628,12 @@ def _tool_version(name: str, args: list[str]) -> dict[str, Any]:
 
 
 def diagnostics() -> dict[str, Any]:
+    tk_ok = True
+    try:
+        import tkinter  # noqa: F401
+    except Exception:
+        tk_ok = False
+
     synthid_dir = os.environ.get("REVERSE_SYNTHID_DIR")
     return {
         "python": sys.version.split()[0],
@@ -625,6 +641,7 @@ def diagnostics() -> dict[str, Any]:
         "scripts_dir": str(SCRIPTS_DIR),
         "max_input_mib": MAX_INPUT_BYTES // (1 << 20),
         "compat_notes": compat.notes(),
+        "native_dialogs": tk_ok,
         "tools": {
             "exiftool": _tool_version("exiftool", ["-ver"]),
             "c2patool": _tool_version("c2patool", ["--version"]),

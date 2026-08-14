@@ -112,6 +112,14 @@
                 <option value="container">Document (PDF, DOCX, …)</option>
               </select>
             </label>
+            <label class="field">
+              <span class="field-label">When cleaning, save</span>
+              <select id="optSave">
+                <option value="copy">A cleaned copy next to the original</option>
+                <option value="inplace">Over the original (keeps a .bak)</option>
+                <option value="download">Nothing — just let me download it</option>
+              </select>
+            </label>
             <label class="check">
               <input type="checkbox" id="optAggressive">
               <span>Flag look-alike letters (Cyrillic “а”, Greek “ο”, …)</span>
