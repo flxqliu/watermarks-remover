@@ -48,7 +48,7 @@ Industry framing (C2PA + SynthID two-layer model; see Institute of AI PM guide i
 
 | Format | Support |
 | --- | --- |
-| PNG / JPEG | Full strip (stdlib + optional exiftool) |
+| PNG / JPEG / WebP | Full strip (stdlib + optional exiftool) |
 | SVG | Drop metadata/XMP blocks |
 | PDF | Prefer exiftool; degraded stdlib XMP strip |
 | DOCX / ODT | Scrub zip XML props / customXml |
