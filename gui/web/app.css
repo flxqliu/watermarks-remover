@@ -701,7 +701,48 @@ kbd {
 .hit-what { color: var(--ink-2); }
 .hit-help { color: var(--ink-3); font-size: 12.5px; }
 
-/* ---------- reveal ---------- */
+/* ---------- editor + reveal ---------- */
+
+.editor {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+.editor-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rule-soft);
+  background: var(--panel-2);
+}
+.editor-meta { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); letter-spacing: .06em; }
+
+.seg { display: flex; border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; }
+.seg-btn {
+  appearance: none; border: 0; background: var(--panel);
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); padding: 4px 12px; cursor: pointer;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--rule); }
+.seg-btn.is-active { background: var(--ink); color: var(--paper); }
+
+.editor-area {
+  border: 0;
+  border-radius: 0;
+  width: 100%;
+  min-height: 300px;
+  padding: 16px 18px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--panel);
+}
+.editor-area:focus { outline: none; }
+.editor-area.standalone {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  min-height: 340px;
+}
 
 .reveal-area {
   min-height: 300px;

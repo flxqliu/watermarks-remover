@@ -29,7 +29,9 @@ pip install pywebview
 
 ---
 
-## The Files screen
+## What each screen does
+
+### 01 · Files
 
 Drag files in, or press **Browse…**. Every file is scanned as it arrives and
 gets a verdict: *marks* or *clean*. Open one to see the findings, the exact
@@ -75,6 +77,19 @@ documents they are almost always deliberate typography (`Table 1`, `p = 0.05`,
 `Fig. 3`) rather than a watermark, and converting them changes how the document
 breaks across lines.
 
+### 02 · Text
+
+For everything you copied out of a chat window and never saved to a file. Paste
+it, and **Reveal** replaces every invisible character with a labelled chip, in
+place, so you can see exactly what came along:
+
+```
+Here⟨ZWSP⟩is a paragraph that looks perfectly normal.⟨WJ⟩
+```
+
+**Clean text** strips them and tells you the count. Then copy the result or save
+it as `.txt`.
+
 ## What maps to what
 
 Every screen is a front end for the same scripts the CLI uses, called in-process:
@@ -83,6 +98,7 @@ Every screen is a front end for the same scripts the CLI uses, called in-process
 | --- | --- |
 | Files → scan | `inspect_file.py` · `inspect_image.py` · `inspect_text.py` |
 | Files → clean | `clean_file.py` · `clean_image.py` |
+| Text | `inspect_text.py` · `clean_text.py` |
 
 Markdown and HTML get the text scan too, since `clean_container` scrubs their
 bodies — the report would otherwise hide characters the clean would remove.

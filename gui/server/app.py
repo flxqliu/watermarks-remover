@@ -362,11 +362,43 @@ def api_clean(h: Handler) -> None:
     h._json(result)
 
 
+def api_text_inspect(h: Handler) -> None:
+    data = h._payload()
+    text = str(data.get("text") or "")
+    h._json(bridge.inspect_text(text, aggressive=bool(data.get("aggressive"))))
+
+
+def api_text_clean(h: Handler) -> None:
+    data = h._payload()
+    text = str(data.get("text") or "")
+    result = bridge.clean_text(
+        text,
+        nfkc=bool(data.get("nfkc")),
+        aggressive_homoglyphs=bool(data.get("aggressive_homoglyphs")),
+    )
+    result["report"] = bridge.inspect_text(result["text"], aggressive=bool(data.get("aggressive")))
+    h._json(result)
+
+
+def api_text_save(h: Handler) -> None:
+    data = h._payload()
+    text = str(data.get("text") or "")
+    name = _safe_name(str(data.get("name") or "cleaned.txt"))
+    folder = WORKDIR / secrets.token_urlsafe(8)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / name
+    target.write_text(text, encoding="utf-8")
+    h._json({"download_id": register(target, name, origin="output"), "name": name})
+
+
 ROUTES = {
     "/api/diagnostics": api_diagnostics,
     "/api/upload": api_upload,
     "/api/inspect": api_inspect,
     "/api/clean": api_clean,
+    "/api/text/inspect": api_text_inspect,
+    "/api/text/clean": api_text_clean,
+    "/api/text/save": api_text_save,
 }
 
 

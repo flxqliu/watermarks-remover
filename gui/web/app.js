@@ -232,7 +232,7 @@ $("#keysBtn").addEventListener("click", () => toggleKeys(true));
 $("#keysClose").addEventListener("click", () => toggleKeys(false));
 keysModal.addEventListener("click", (e) => { if (e.target === keysModal) toggleKeys(false); });
 
-const VIEW_ORDER = ["files"];
+const VIEW_ORDER = ["files", "text"];
 
 document.addEventListener("keydown", (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")
@@ -256,6 +256,11 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
     if (files.length) { $("#cleanAllBtn").click(); e.preventDefault(); }
     return;
+  }
+  if (e.key.toLowerCase() === "r" && $(".view.is-active")?.dataset.view === "text") {
+    const next = textMode === "edit" ? "reveal" : "edit";
+    $(`#textModeSeg .seg-btn[data-mode="${next}"]`).click();
+    e.preventDefault();
   }
 });
 
@@ -709,6 +714,137 @@ for (const id of ["#optAggressive", "#optAs"]) {
     });
   });
 }
+
+// ---------------------------------------------------------------- 02 text
+
+const textInput = $("#textInput");
+let textReport = null;
+let textMode = "edit";
+let textTimer = null;
+let textSeq = 0;
+
+function renderText() {
+  const value = textInput.value;
+  $("#textMeta").textContent = `${value.length.toLocaleString()} characters`;
+
+  const verdict = $("#textVerdict");
+  const hitsWrap = $("#textHits");
+  const legendWrap = $("#textLegend");
+  const revealWrap = $("#revealArea");
+
+  if (!value) {
+    verdict.hidden = true;
+    hitsWrap.hidden = true;
+    legendWrap.hidden = true;
+    revealWrap.replaceChildren();
+    return;
+  }
+  if (!textReport) return;
+
+  verdict.hidden = false;
+  verdict.className = `verdict ${textReport.clean ? "clean" : "found"}`;
+  verdict.replaceChildren(
+    el("p", {
+      class: "verdict-title",
+      text: textReport.clean
+        ? "Nothing hidden in here"
+        : `${plural(textReport.suspicious_total, "hidden character", "hidden characters")} found`,
+    }),
+    el("p", {
+      class: "verdict-sub",
+      text: textReport.clean
+        ? "No invisible or look-alike characters. Statistical watermarks are invisible to this check — see Rewrite."
+        : "Switch to Reveal (or press R) to see exactly where they sit.",
+    }));
+
+  const hasHits = textReport.hits.length > 0;
+  hitsWrap.hidden = !hasHits;
+  legendWrap.hidden = !hasHits;
+  if (hasHits) {
+    hitsWrap.replaceChildren(hitsTable(textReport.hits));
+    const lg = legendNode(textReport.hits);
+    legendWrap.replaceChildren(...(lg ? lg.childNodes : []));
+  }
+
+  revealWrap.replaceChildren(...revealNode(textReport.reveal).childNodes);
+}
+
+async function inspectTextNow() {
+  const value = textInput.value;
+  if (!value) { textReport = null; renderText(); return; }
+  const seq = ++textSeq;
+  try {
+    const report = await api("/api/text/inspect", {
+      text: value, aggressive: $("#textAggressive").checked,
+    });
+    if (seq !== textSeq) return;  // a newer keystroke already won
+    textReport = report;
+  } catch (e) {
+    if (seq !== textSeq) return;
+    toast(e.message, true);
+    textReport = null;
+  }
+  renderText();
+}
+
+textInput.addEventListener("input", () => {
+  $("#textMeta").textContent = `${textInput.value.length.toLocaleString()} characters`;
+  clearTimeout(textTimer);
+  textTimer = setTimeout(inspectTextNow, 350);
+});
+$("#textAggressive").addEventListener("change", inspectTextNow);
+
+$("#textModeSeg").addEventListener("click", (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (!btn) return;
+  textMode = btn.dataset.mode;
+  $$("#textModeSeg .seg-btn").forEach((b) => b.classList.toggle("is-active", b === btn));
+  textInput.hidden = textMode !== "edit";
+  $("#revealArea").hidden = textMode !== "reveal";
+});
+
+$("#textCleanBtn").addEventListener("click", async (e) => {
+  if (!textInput.value) { toast("Paste some text first"); return; }
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const res = await api("/api/text/clean", {
+      text: textInput.value,
+      nfkc: $("#textNfkc").checked,
+      aggressive_homoglyphs: $("#textAggressive").checked,
+      aggressive: $("#textAggressive").checked,
+    });
+    textInput.value = res.text;
+    textSeq += 1;
+    textReport = res.report;
+    renderText();
+    const s = res.stats;
+    toast(s.removed_count || s.replaced_count
+      ? `Removed ${s.removed_count}, replaced ${s.replaced_count}`
+      : "Nothing needed removing");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#textCopyBtn").addEventListener("click", () => copyText(textInput.value));
+$("#textClearBtn").addEventListener("click", () => {
+  textInput.value = "";
+  textSeq += 1;
+  textReport = null;
+  renderText();
+});
+$("#textDownloadBtn").addEventListener("click", async () => {
+  if (!textInput.value) { toast("Nothing to save"); return; }
+  try {
+    const res = await api("/api/text/save", { text: textInput.value, name: "cleaned.txt" });
+    await download(`/api/download?id=${encodeURIComponent(res.download_id)}`, res.name);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 // ---------------------------------------------------------------- boot
 
