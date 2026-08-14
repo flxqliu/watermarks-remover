@@ -117,7 +117,7 @@ python3 "$SCRIPTS/clean_file.py" INPUT -o OUTPUT
 python3 "$SCRIPTS/inspect_file.py" OUTPUT   # verify
 ```
 
-Optional tools if installed: `c2patool`, `exiftool` (auto-used when present; PDF strongly prefers exiftool).
+Optional tools if installed: `c2patool`, `exiftool`, `qpdf` (auto-used when present). PDF needs **both** exiftool and qpdf: exiftool's PDF edits are incremental, so without the qpdf rebuild the original metadata bytes stay recoverable in the file. `clean_file.py` warns when qpdf is missing.
 
 **Images — optional pixel removal (external):** after the metadata clean, add
 `--remove-pixel ctrlregen` to `clean_image.py` (bootstrap the backend first).
@@ -236,7 +236,7 @@ Always state:
 
 - Layer A does **not** remove token-sampling watermarks.
 - Layer B cannot be gold-verified without vendor detectors / keys.
-- PDF strip is best-effort without `exiftool`.
+- PDF strip is best-effort without `exiftool`, and incomplete without `qpdf`: exiftool alone leaves the freed metadata objects in the byte stream.
 - Pixel-domain **image** watermarks can be removed optionally via the external CtrlRegen backend (`clean_image.py --remove-pixel ctrlregen`); audio/video watermarks remain out of scope for removal.
 - The CtrlRegen backend is external, all-rights-reserved (no LICENSE file), never bundled, heavy (~10 GB model downloads), and a regenerating remover — no local detector certifies StegaStamp/Tree-Ring/StableSignature removal.
 - The reverse-SynthID scorer is external, best-effort, and under a non-commercial Research License; it is not bundled and is not an official Google detector.
