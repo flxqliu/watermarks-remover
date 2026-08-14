@@ -107,7 +107,9 @@ remote URLs; download assets and run `audit_dir.py` locally for those.
 
 ```bash
 python3 "$SCRIPTS/clean_text.py" INPUT -o OUTPUT --stats
-# optional: --nfkc  --aggressive-homoglyphs
+# optional and potentially lossy: --nfkc  --aggressive-homoglyphs
+# multilingual layout preservation: --no-normalize-spaces (recommended)
+# reviewed bidi cleanup only: --strip-bidi
 ```
 
 **Any supported file (unified):**

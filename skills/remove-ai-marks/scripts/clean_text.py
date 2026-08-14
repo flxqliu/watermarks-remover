@@ -34,6 +34,11 @@ def main() -> int:
         action="store_true",
         help="Paranoid: strip all load-bearing invisibles too (emoji glue, script joiners, flag tags, orthographic Cf)",
     )
+    p.add_argument(
+        "--strip-bidi",
+        action="store_true",
+        help="Also strip legitimate RTL/LTR directional marks and isolates",
+    )
     p.add_argument("--stats", action="store_true", help="Print stats JSON to stderr")
     p.add_argument(
         "--force-text",
@@ -55,6 +60,7 @@ def main() -> int:
         aggressive_homoglyphs=args.aggressive_homoglyphs,
         normalize_spaces=not args.no_normalize_spaces,
         strip_emoji_glue=args.strip_emoji_glue,
+        strip_bidi=args.strip_bidi,
     )
 
     out = args.output
