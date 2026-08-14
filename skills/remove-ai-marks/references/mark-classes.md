@@ -10,12 +10,13 @@ Invisible or near-invisible characters, exotic spaces, bidi controls, tag charac
 | `bidi` | LRE/RLO/LRI/… |
 | `tag_chars` | U+E0001–U+E007F |
 | `variation_selector` | VS1–VS256 |
+| `private_use` | U+E000–F8FF, U+F0000–FFFFD, U+100000–10FFFD |
 | `space` | NBSP, em space, ideographic space |
 | `confusable` | Cyrillic/fullwidth Latin (aggressive) |
 
 **Removal:** `clean_text.py` / Layer A — deterministic, verifiable.
 
-Load-bearing invisibles are preserved by default so real text is not corrupted: emoji glue (ZWJ/VS after an emoji base), script joiners (ZWNJ/ZWJ inside complex scripts like Persian or Devanagari), flag tag-char sequences, and orthographic Arabic/Syriac `Cf` marks. The same characters between plain ASCII stay carriers and are still stripped. Use `--strip-emoji-glue` for paranoid mode (strips all of them).
+Load-bearing invisibles are preserved by default so real text is not corrupted: emoji glue (ZWJ/VS after an emoji base), script joiners (ZWNJ/ZWJ inside complex scripts like Persian or Devanagari), flag tag-char sequences, same-script fillers/selectors (Mongolian free variation selectors after a Mongolian letter, Khmer inherent vowels after a Khmer consonant, Hangul jamo fillers in a partial syllable), and orthographic Arabic/Syriac `Cf` marks. The same characters between plain ASCII stay carriers and are still stripped. Use `--strip-emoji-glue` for paranoid mode (strips all of them).
 
 Maps to Nature paper “edit-based watermarking.”
 
