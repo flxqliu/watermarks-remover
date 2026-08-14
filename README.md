@@ -48,6 +48,7 @@ Optional system tools (auto-used when present):
 | --- | --- |
 | [`c2patool`](https://github.com/contentauth/c2pa-rs/tree/main/cli) | Inspect C2PA manifests |
 | [`exiftool`](https://exiftool.org/) | Residual metadata strip (esp. **PDF**) |
+| [`qpdf`](https://qpdf.sourceforge.io/) | Structural PDF rebuild — **required** for a real PDF strip (see below) |
 
 Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional.
 
@@ -282,11 +283,29 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | --- | --- | --- |
 | PNG / JPEG | C2PA chunks / APP11, AI XMP hints | Drop metadata segments |
 | SVG | `<metadata>`, XMP | Strip blocks |
-| PDF | Byte/XMP + optional tools | **exiftool** preferred; degraded without it |
+| PDF | Byte/XMP + optional tools | **exiftool** then **qpdf**; degraded without either |
 | DOCX | docProps / customXml | Scrub props, drop customXml |
 | ODT | meta.xml | Drop generator / AI-ish meta |
 | HTML | meta, JSON-LD, data-ai* | Strip tags/attrs |
 | Markdown | YAML frontmatter AI keys | Drop keys + Layer A body |
+
+#### Why PDF needs qpdf, not just exiftool
+
+ExifTool writes PDFs **incrementally**. `exiftool -all=` appends a
+`%BeginExifToolUpdate` block that frees the Info object and drops `/Info` from
+the trailer — but the original metadata bytes stay in the file verbatim, and
+exiftool itself can undo the edit with `-PDF-update:all=`. The command exits
+`0`, viewers show no metadata, and the file gets *larger*, which is the tell.
+
+For a provenance-stripping tool that is a silent leak, so `clean_pdf` follows
+the exiftool pass with `qpdf --linearize`, which re-serializes the document
+from its object graph and drops the now-unreferenced objects. Without `qpdf`
+installed the clean still runs, but it says so:
+
+```
+warning: exiftool PDF edits are incremental — the original metadata bytes
+remain recoverable; install qpdf for a structural rewrite
+```
 
 Pixel-domain watermark **removal** is now available as an optional external CtrlRegen backend (see above); it is a regenerating remover, not a guarantee. **C2PA soft binding** (in-content watermark that can re-link a remote Content Credentials manifest after metadata is stripped) remains **out of scope**. Stripping hard-bound C2PA does **not** clear those channels.
 
