@@ -110,6 +110,20 @@ which is labelled with what it means: your text leaves the machine. API keys
 live in memory for the length of one request — never on disk, never in a command
 line.
 
+### 04 · Setup
+
+What this machine can do right now. `exiftool` and `c2patool` are optional but
+make cleaning meaningfully better (especially for PDFs); this screen tells you
+whether they are present and gives you the exact install command for your OS.
+Also covers SynthID scoring and the native file dialog.
+
+### 05 · Guide
+
+The project's own reference notes — ethics, mark classes, removal matrix, vendor
+notes — rendered offline from `skills/remove-ai-marks/references/`.
+
+---
+
 ## What maps to what
 
 Every screen is a front end for the same scripts the CLI uses, called in-process:
@@ -120,6 +134,7 @@ Every screen is a front end for the same scripts the CLI uses, called in-process
 | Files → clean | `clean_file.py` · `clean_image.py` |
 | Text | `inspect_text.py` · `clean_text.py` |
 | Rewrite | `rewrite_text.py` |
+| Setup → SynthID | `score_synthid.py` |
 
 Markdown and HTML get the text scan too, since `clean_container` scrubs their
 bodies — the report would otherwise hide characters the clean would remove.

@@ -642,3 +642,21 @@ def diagnostics() -> dict[str, Any]:
             "allow_remote": os.environ.get("WATERMARKS_REWRITE_ALLOW_REMOTE", ""),
         },
     }
+
+
+def reference_docs() -> list[dict[str, str]]:
+    """The repo's own reference notes, so the GUI can show them offline."""
+    refs = REPO_ROOT / "skills" / "remove-ai-marks" / "references"
+    docs = []
+    if refs.is_dir():
+        for p in sorted(refs.glob("*.md")):
+            docs.append({"id": p.stem, "title": p.stem.replace("-", " ").title()})
+    return docs
+
+
+def reference_body(doc_id: str) -> str:
+    refs = (REPO_ROOT / "skills" / "remove-ai-marks" / "references").resolve()
+    target = (refs / f"{doc_id}.md").resolve()
+    if target.parent != refs or not target.is_file():
+        raise ValueError("Unknown document")
+    return target.read_text(encoding="utf-8", errors="replace")

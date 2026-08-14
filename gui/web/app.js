@@ -232,7 +232,7 @@ $("#keysBtn").addEventListener("click", () => toggleKeys(true));
 $("#keysClose").addEventListener("click", () => toggleKeys(false));
 keysModal.addEventListener("click", (e) => { if (e.target === keysModal) toggleKeys(false); });
 
-const VIEW_ORDER = ["files", "text", "rewrite"];
+const VIEW_ORDER = ["files", "text", "rewrite", "setup", "guide"];
 
 document.addEventListener("keydown", (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")
@@ -964,6 +964,241 @@ $("#rwDownloadBtn").addEventListener("click", async () => {
     toast(e.message, true);
   }
 });
+
+// ---------------------------------------------------------------- 04 setup
+
+const INSTALL = {
+  Windows: {
+    exiftool: "winget install -e --id OliverBetz.ExifTool",
+    c2patool: "cargo install c2patool",
+  },
+  Darwin: {
+    exiftool: "brew install exiftool",
+    c2patool: "cargo install c2patool",
+  },
+  Linux: {
+    exiftool: "sudo apt install libimage-exiftool-perl",
+    c2patool: "cargo install c2patool",
+  },
+};
+
+function osKey(platformString) {
+  if (/windows/i.test(platformString)) return "Windows";
+  if (/darwin|mac/i.test(platformString)) return "Darwin";
+  return "Linux";
+}
+
+function snippet(command) {
+  return el("div", { class: "snippet" },
+    el("code", { text: command }),
+    el("button", { class: "btn btn-sm", text: "Copy", onclick: () => copyText(command) }));
+}
+
+function toolCard(name, info, blurb, command) {
+  return el("div", { class: "card" },
+    el("h3", {},
+      el("span", { text: name }),
+      el("span", { class: `status-pill ${info.available ? "on" : "off"}`,
+        text: info.available ? "installed" : "missing" })),
+    el("p", { text: blurb }),
+    info.available
+      ? el("dl", { class: "kv" },
+          el("dt", { text: "Version" }), el("dd", { text: info.version || "unknown" }),
+          el("dt", { text: "Path" }), el("dd", { text: info.path }))
+      : snippet(command));
+}
+
+async function loadSetup() {
+  const body = $("#setupBody");
+  body.replaceChildren(el("div", { class: "skeleton" },
+    el("div", { class: "sk-line" }), el("div", { class: "sk-line short" })));
+  try {
+    const d = await api("/api/diagnostics", {});
+    const os = osKey(d.platform);
+    const install = INSTALL[os];
+
+    const cards = [
+      el("div", { class: "card" },
+        el("h3", {}, el("span", { text: "This machine" })),
+        el("dl", { class: "kv" },
+          el("dt", { text: "Python" }), el("dd", { text: d.python }),
+          el("dt", { text: "System" }), el("dd", { text: d.platform }),
+          el("dt", { text: "Size limit" }), el("dd", { text: `${d.max_input_mib} MiB per file` }),
+          el("dt", { text: "Scripts" }), el("dd", { text: d.scripts_dir }))),
+
+      toolCard("exiftool", d.tools.exiftool,
+        "Strips residual metadata that pure-Python passes cannot reach — the difference between a best-effort and a reliable PDF clean.",
+        install.exiftool),
+
+      toolCard("c2patool", d.tools.c2patool,
+        "Reads C2PA / Content Credentials manifests, so inspection reports what a verifier would actually see.",
+        install.c2patool),
+
+      el("div", { class: "card" },
+        el("h3", {},
+          el("span", { text: "SynthID pixel scoring" }),
+          el("span", { class: `status-pill ${d.synthid.configured && d.synthid.exists ? "on" : "off"}`,
+            text: d.synthid.configured && d.synthid.exists ? "ready" : "not set up" })),
+        el("p", { text: "Optional, heavy, and third-party: scores images for Google’s pixel watermark. Point REVERSE_SYNTHID_DIR at a reverse-SynthID checkout, then restart this app." }),
+        d.synthid.dir ? el("dl", { class: "kv" },
+          el("dt", { text: "Dir" }), el("dd", { text: d.synthid.dir }),
+          el("dt", { text: "Exists" }), el("dd", { text: d.synthid.exists ? "yes" : "no" })) : null,
+        snippet(os === "Windows"
+          ? "set REVERSE_SYNTHID_DIR=C:\\path\\to\\reverse-SynthID"
+          : "export REVERSE_SYNTHID_DIR=~/reverse-SynthID")),
+    ];
+
+    if (d.compat_notes && d.compat_notes.length) {
+      cards.push(el("div", { class: "card" },
+        el("h3", {}, el("span", { text: "Platform notes" })),
+        el("ul", { class: "findings plain" }, d.compat_notes.map((n) => el("li", { text: n })))));
+    }
+
+    body.replaceChildren(...cards);
+  } catch (e) {
+    body.replaceChildren(emptyState("Cannot reach the local server", e.message,
+      el("button", { class: "btn", text: "Try again", onclick: loadSetup })));
+  }
+}
+
+$("#setupRefresh").addEventListener("click", loadSetup);
+$("#quitBtn").addEventListener("click", async () => {
+  try { await api("/api/shutdown", {}); } catch { /* the server is going away */ }
+  document.body.replaceChildren(el("div", { class: "farewell" },
+    el("p", { text: "watermarks-remover has stopped. You can close this window." })));
+});
+
+// ---------------------------------------------------------------- 05 guide
+
+let docsLoaded = false;
+
+async function loadDocs() {
+  if (docsLoaded) return;
+  try {
+    const res = await api("/api/refs", {});
+    $("#docList").replaceChildren(...res.docs.map((doc) => el("li", {},
+      el("button", {
+        type: "button",
+        text: doc.title,
+        onclick: (e) => {
+          $$("#docList button").forEach((b) => b.classList.toggle("is-active", b === e.currentTarget));
+          showDoc(doc.id);
+        },
+      }))));
+    docsLoaded = true;
+    const first = $("#docList button");
+    if (first) first.click();
+  } catch (e) {
+    $("#docBody").replaceChildren(emptyState("Could not load the notes", e.message));
+  }
+}
+
+async function showDoc(id) {
+  try {
+    const res = await api("/api/refs", { id });
+    $("#docBody").replaceChildren(...markdownNodes(res.body));
+  } catch (e) {
+    $("#docBody").replaceChildren(emptyState("Could not load that document", e.message));
+  }
+}
+
+// Small markdown renderer. Builds DOM nodes rather than HTML strings, so
+// nothing in a document can turn into markup.
+function markdownNodes(src) {
+  const out = [];
+  const lines = src.split(/\r?\n/);
+  let para = [];
+  let list = null;
+  let quote = [];
+
+  const inline = (text) => {
+    const nodes = [];
+    const re = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\n]+)\*|\[([^\]]+)\]\(([^)\s]+)\)/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) nodes.push(text.slice(last, m.index));
+      if (m[1] != null) nodes.push(el("code", { text: m[1] }));
+      else if (m[2] != null) nodes.push(el("strong", { text: m[2] }));
+      else if (m[3] != null) nodes.push(el("em", { text: m[3] }));
+      else {
+        const href = /^(https?:|#|\.|\/)/.test(m[5]) ? m[5] : "#";
+        nodes.push(el("a", { href, target: "_blank", rel: "noopener noreferrer", text: m[4] }));
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) nodes.push(text.slice(last));
+    return nodes;
+  };
+
+  const flushPara = () => {
+    if (para.length) { out.push(el("p", {}, inline(para.join(" ")))); para = []; }
+  };
+  const flushList = () => { list = null; };
+  const flushQuote = () => {
+    if (quote.length) { out.push(el("blockquote", {}, inline(quote.join(" ")))); quote = []; }
+  };
+  const flushAll = () => { flushPara(); flushList(); flushQuote(); };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    const fence = /^```(\w*)\s*$/.exec(line);
+    if (fence) {
+      flushAll();
+      const buf = [];
+      i += 1;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      out.push(el("pre", {}, el("code", { text: buf.join("\n") })));
+      continue;
+    }
+    if (!line.trim()) { flushAll(); continue; }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flushAll();
+      out.push(el(`h${Math.min(heading[1].length, 6)}`, {}, inline(heading[2])));
+      continue;
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushAll(); out.push(el("hr", {})); continue; }
+
+    if (line.trim().startsWith("|") && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || "")) {
+      flushAll();
+      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && lines[i].trim().startsWith("|")) rows.push(cells(lines[i++]));
+      i -= 1;
+      out.push(el("div", { class: "table-scroll" },
+        el("table", {},
+          el("thead", {}, el("tr", {}, head.map((c) => el("th", {}, inline(c))))),
+          el("tbody", {}, rows.map((r) => el("tr", {}, r.map((c) => el("td", {}, inline(c)))))))));
+      continue;
+    }
+
+    const quoted = /^>\s?(.*)$/.exec(line);
+    if (quoted) { flushPara(); flushList(); quote.push(quoted[1]); continue; }
+
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      flushPara(); flushQuote();
+      const want = bullet ? "ul" : "ol";
+      if (!list || list.tagName.toLowerCase() !== want) {
+        list = el(want, {});
+        out.push(list);
+      }
+      list.append(el("li", {}, inline((bullet || numbered)[1])));
+      continue;
+    }
+
+    flushList(); flushQuote();
+    para.push(line.trim());
+  }
+  flushAll();
+  return out;
+}
 
 // ---------------------------------------------------------------- boot
 

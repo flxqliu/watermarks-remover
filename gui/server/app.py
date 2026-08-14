@@ -303,6 +303,15 @@ def api_diagnostics(h: Handler) -> None:
     h._json(bridge.diagnostics())
 
 
+def api_refs(h: Handler) -> None:
+    data = h._payload()
+    doc_id = data.get("id")
+    if doc_id:
+        h._json({"id": doc_id, "body": bridge.reference_body(str(doc_id))})
+        return
+    h._json({"docs": bridge.reference_docs()})
+
+
 def api_upload(h: Handler) -> None:
     # The browser percent-encodes the name: HTTP headers cannot carry raw UTF-8.
     name = _safe_name(unquote(h.headers.get("X-WM-Filename") or "dropped-file"))
@@ -432,8 +441,14 @@ def api_rewrite_probe(h: Handler) -> None:
     )
 
 
+def api_shutdown(h: Handler) -> None:
+    h._json({"ok": True})
+    threading.Thread(target=h.server.shutdown, daemon=True).start()
+
+
 ROUTES = {
     "/api/diagnostics": api_diagnostics,
+    "/api/refs": api_refs,
     "/api/upload": api_upload,
     "/api/inspect": api_inspect,
     "/api/clean": api_clean,
@@ -443,6 +458,7 @@ ROUTES = {
     "/api/rewrite": api_rewrite,
     "/api/rewrite/prompt": api_rewrite_prompt,
     "/api/rewrite/probe": api_rewrite_probe,
+    "/api/shutdown": api_shutdown,
 }
 
 
