@@ -3,7 +3,7 @@ name: remove-ai-marks
 description: >
   Remove multi-vendor AI provenance marks: invisible Unicode (Layer A), statistical
   text watermarks via rewrite (Layer B, always offer), and C2PA/EXIF/XMP/container
-  metadata on PNG/JPEG/SVG/PDF/DOCX/ODT/HTML/MD. Covers Claude, Gemini/SynthID-class,
+  metadata on PNG/JPEG/WebP/SVG/PDF/DOCX/ODT/HTML/MD. Covers Claude, Gemini/SynthID-class,
   OpenAI provenance, and open-LLM sampling marks. Use when the user asks to strip
   watermarks, remove C2PA/Content Credentials, clean AI metadata, remove invisible
   Unicode, anti-detect clean AI output, or runs /remove-ai-marks (aliases:
@@ -52,7 +52,7 @@ Intended for **your own** content (privacy, hygiene, research). Do not market re
 | Pasted / clipboard text | temp file or stdin → text pipeline |
 | `.txt` / code | text Layer A (+ formatter for code) |
 | `.md` / `.html` | container clean (frontmatter/meta) + Layer A |
-| `.png` / `.jpg` / `.jpeg` | image metadata strip |
+| `.png` / `.jpg` / `.jpeg` / `.webp` | image metadata strip |
 | `.svg` / `.pdf` / `.docx` / `.odt` | container metadata strip |
 | Directory | aggregate report with `audit_dir.py` |
 | Website / sitemap | aggregate report with `audit_website.py` |

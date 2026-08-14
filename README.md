@@ -19,7 +19,7 @@ Agent skill + stdlib Python scripts to strip **multi-vendor AI provenance marks*
 | --- | --- | --- |
 | **A** | Invisible Unicode, exotic spaces, bidi, tag chars | Deterministic Python scripts |
 | **B** | Statistical (token-sampling) text watermarks | Agent rewrite + optional `rewrite_text.py` hook |
-| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, SVG, PDF, DOCX, ODT, HTML, Markdown |
+| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, SVG, PDF, DOCX, ODT, HTML, Markdown |
 
 Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style marks.
 
@@ -280,7 +280,7 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 
 | Format | Inspect | Clean |
 | --- | --- | --- |
-| PNG / JPEG | C2PA chunks / APP11, AI XMP hints | Drop metadata segments |
+| PNG / JPEG / WebP | C2PA chunks / APP11 / RIFF `C2PA`, AI XMP hints | Drop metadata segments |
 | SVG | `<metadata>`, XMP | Strip blocks |
 | PDF | Byte/XMP + optional tools | **exiftool** preferred; degraded without it |
 | DOCX | docProps / customXml | Scrub props, drop customXml |
@@ -333,6 +333,10 @@ make smoke                          # quick CLI smoke on fixtures
 ```
 
 ## Changelog
+
+### Unreleased
+
+- Add stdlib-only WebP inspection and metadata cleaning for RIFF `C2PA`, XMP, EXIF, and ICC profile chunks
 
 ### [v0.4.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.4.0) — pixel removal, finding confidence, Windows & false-positive fixes
 
