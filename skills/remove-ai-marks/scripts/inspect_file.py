@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified inspect: text, images (PNG/JPEG), and containers (SVG/PDF/DOCX/ODT/HTML/MD)."""
+"""Unified inspect: text, images (PNG/JPEG/WebP), and document containers."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from image_meta import inspect_image  # noqa: E402
 from text_unicode import human_report, inspect_text  # noqa: E402
 
 TEXT_EXTS = {".txt", ".text", ".md", ".markdown", ".mdx", ".html", ".htm", ".css", ".js", ".py", ".rs", ".go", ".json", ".yaml", ".yml", ".toml", ".csv"}
-IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 CONTAINER_EXTS = {".svg", ".pdf", ".docx", ".odt", ".html", ".htm", ".md", ".markdown", ".mdx"}
 
 
@@ -37,7 +37,11 @@ def classify(path: Path) -> str:
         return "text"
     # magic sniff
     data = path.read_bytes()[:16]
-    if detect_image_format(data if len(data) >= 8 else path.read_bytes()) in ("png", "jpeg"):
+    if detect_image_format(data if len(data) >= 12 else path.read_bytes()) in (
+        "png",
+        "jpeg",
+        "webp",
+    ):
         return "image"
     fmt = detect_container_format(path, path.read_bytes()[:4096] if path.stat().st_size else b"")
     if fmt != "unknown":
