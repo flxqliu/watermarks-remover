@@ -254,7 +254,7 @@ _GENERATOR_AI_RE = re.compile(
 
 
 def _meta_attrs(tag: str) -> dict[str, str]:
-    return dict(_META_ATTR_RE.findall(tag))
+    return {name.lower(): value for name, value in _META_ATTR_RE.findall(tag)}
 
 
 def _is_cms_generator_meta(tag: str) -> bool:
