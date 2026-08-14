@@ -256,6 +256,7 @@ def _open_pinned_connection(
 
             if scheme == "https":
                 context = ssl.create_default_context()
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
                 try:
                     context.set_alpn_protocols(["http/1.1"])
                 except NotImplementedError:
