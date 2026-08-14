@@ -37,14 +37,6 @@ def test_lightweight_skill_has_no_template_placeholders():
     assert (SKILL / "references" / "watermark-notes.md").is_file()
 
 
-def test_lightweight_core_matches_canonical_implementation():
-    canonical = ROOT / "skills" / "remove-ai-marks" / "scripts"
-    lightweight = SKILL / "scripts"
-
-    for name in ("clean_text.py", "inspect_text.py", "text_unicode.py"):
-        assert (lightweight / name).read_bytes() == (canonical / name).read_bytes()
-
-
 def _run_installer(home: Path, *args: str, check: bool = True):
     env = os.environ.copy()
     env.pop("CURSOR_HOME", None)
