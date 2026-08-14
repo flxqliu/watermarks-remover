@@ -53,6 +53,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import common  # noqa: E402
 import container_meta  # noqa: E402
 import image_meta  # noqa: E402
+import rewrite_text as rewrite_mod  # noqa: E402
 import text_unicode  # noqa: E402
 
 MAX_INPUT_BYTES = common.MAX_INPUT_BYTES
@@ -64,6 +65,8 @@ TEXT_EXTS = {
     ".json", ".yaml", ".yml", ".toml", ".csv",
 }
 
+REWRITE_STRENGTHS = ("paraphrase", "humanize", "code", "backtranslate", "structural")
+REWRITE_BACKENDS = ("print-prompt", "ollama", "openai-compatible")
 
 # Compact names for the reveal view. Unicode's official names are too long to
 # sit inline in a paragraph, and "U+200B" alone tells a non-expert nothing.
@@ -519,6 +522,84 @@ def cleaned_path(path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Layer B rewrite
+# ---------------------------------------------------------------------------
+
+def build_prompt(text: str, *, strength: str, lang: str, original_lang: str) -> str:
+    return rewrite_mod.build_prompt(strength, text, lang=lang, original_lang=original_lang)
+
+
+def rewrite(
+    text: str,
+    *,
+    backend: str,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    strength: str,
+    lang: str,
+    original_lang: str,
+    timeout: float,
+    temperature: float,
+    candidates: int,
+    layer_a_after: bool,
+    allow_remote: bool,
+) -> dict[str, Any]:
+    if backend not in REWRITE_BACKENDS:
+        raise ValueError(f"Unknown backend: {backend}")
+    if strength not in REWRITE_STRENGTHS:
+        raise ValueError(f"Unknown strength: {strength}")
+
+    out, info = rewrite_mod.rewrite(
+        text,
+        backend=backend,
+        model=model or None,
+        base_url=base_url or None,
+        api_key=api_key or None,
+        strength=strength,
+        lang=lang,
+        original_lang=original_lang,
+        timeout=timeout,
+        layer_a_after=layer_a_after,
+        temperature=temperature,
+        candidates=candidates,
+        allow_remote=allow_remote,
+    )
+    divergence = None
+    if info.get("mode") == "rewritten":
+        divergence = rewrite_mod._lexical_divergence(text, out)
+    return {"text": out, "info": info, "divergence": divergence}
+
+
+def probe_endpoint(base_url: str, backend: str, timeout: float = 5.0) -> dict[str, Any]:
+    """Cheap reachability check for the rewrite endpoint, used by the UI."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = base_url.rstrip("/")
+    probe = f"{url}/api/tags" if backend == "ollama" else f"{url}/models"
+    try:
+        with urllib.request.urlopen(probe, timeout=timeout) as resp:
+            raw = resp.read(1 << 20)
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"HTTP {e.code} from {probe}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    models: list[str] = []
+    try:
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
+        if backend == "ollama":
+            models = [m.get("name", "") for m in payload.get("models", [])]
+        else:
+            models = [m.get("id", "") for m in payload.get("data", [])]
+    except Exception:
+        pass
+    return {"ok": True, "models": [m for m in models if m][:80]}
+
+
+# ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
 
@@ -552,5 +633,12 @@ def diagnostics() -> dict[str, Any]:
             "configured": bool(synthid_dir),
             "dir": synthid_dir,
             "exists": bool(synthid_dir and Path(synthid_dir).is_dir()),
+        },
+        "rewrite_env": {
+            "backend": os.environ.get("WATERMARKS_REWRITE_BACKEND"),
+            "model": os.environ.get("WATERMARKS_REWRITE_MODEL"),
+            "base_url": os.environ.get("WATERMARKS_REWRITE_BASE_URL"),
+            "api_key_set": bool(os.environ.get("WATERMARKS_REWRITE_API_KEY")),
+            "allow_remote": os.environ.get("WATERMARKS_REWRITE_ALLOW_REMOTE", ""),
         },
     }

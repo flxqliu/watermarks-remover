@@ -37,6 +37,10 @@
         role="tab" aria-selected="false" aria-controls="view-text">
         <em>02</em><span>Text</span>
       </button>
+      <button type="button" class="rail-item" data-view="rewrite"
+        role="tab" aria-selected="false" aria-controls="view-rewrite">
+        <em>03</em><span>Rewrite</span>
+      </button>
       <div class="rail-foot">
         <span class="rail-note">Nothing leaves<br>this computer.</span>
       </div>
@@ -176,6 +180,118 @@
       </section>
 
       <!-- 03 REWRITE -------------------------------------------------- -->
+      <section class="view" data-view="rewrite" id="view-rewrite" role="tabpanel">
+        <div class="view-head">
+          <h1>Rewrite <span class="head-badge">Layer B</span></h1>
+          <p>Statistical watermarks live in word choice itself, so the only way out is rewording.</p>
+        </div>
+
+        <div class="notice">
+          <strong>Best effort, and it costs you something.</strong>
+          Removing a token-sampling watermark means rewriting a large share of the text, which
+          replaces your wording with the rewriting model’s. No tool can certify that the result
+          passes a vendor’s detector — including this one.
+        </div>
+
+        <div class="two-col">
+          <div class="col">
+            <label class="field">
+              <span class="field-label">Text to rewrite</span>
+              <textarea id="rwInput" class="editor-area standalone" spellcheck="false"
+                placeholder="Paste the text…"></textarea>
+            </label>
+          </div>
+          <div class="col col-narrow">
+            <label class="field">
+              <span class="field-label">Approach</span>
+              <select id="rwStrength">
+                <option value="paraphrase">Paraphrase — different wording, same shape</option>
+                <option value="humanize">Humanize — rewrite as if written from scratch</option>
+                <option value="backtranslate">Back-translate — through another language</option>
+                <option value="structural">Structural — outline, then rewrite</option>
+                <option value="code">Code — comments, strings and local names</option>
+              </select>
+            </label>
+
+            <div class="field-row" id="rwLangRow" hidden>
+              <label class="field">
+                <span class="field-label">Pivot language</span>
+                <input type="text" id="rwLang" value="French">
+              </label>
+              <label class="field">
+                <span class="field-label">Back to</span>
+                <input type="text" id="rwOriginalLang" value="English">
+              </label>
+            </div>
+
+            <label class="field">
+              <span class="field-label">Who does the rewriting</span>
+              <select id="rwBackend">
+                <option value="print-prompt">Nobody — just give me the prompt</option>
+                <option value="ollama">Ollama on this machine</option>
+                <option value="openai-compatible">OpenAI-compatible endpoint</option>
+              </select>
+            </label>
+
+            <div id="rwModelBox" hidden>
+              <div class="field-row">
+                <label class="field">
+                  <span class="field-label">Model</span>
+                  <input type="text" id="rwModel" placeholder="llama3.2" list="rwModelList">
+                  <datalist id="rwModelList"></datalist>
+                </label>
+                <label class="field field-slim">
+                  <span class="field-label">Temp.</span>
+                  <input type="number" id="rwTemp" value="0.9" min="0" max="2" step="0.1">
+                </label>
+              </div>
+              <label class="field">
+                <span class="field-label">Endpoint</span>
+                <input type="text" id="rwBaseUrl" value="http://127.0.0.1:11434">
+              </label>
+              <div class="field-row">
+                <label class="field field-slim">
+                  <span class="field-label">Tries</span>
+                  <input type="number" id="rwCandidates" value="1" min="1" max="8" step="1">
+                </label>
+                <label class="field field-slim">
+                  <span class="field-label">Timeout s</span>
+                  <input type="number" id="rwTimeout" value="120" min="5" max="1800" step="5">
+                </label>
+                <button class="btn btn-sm btn-test" id="rwProbeBtn" type="button">Test</button>
+              </div>
+              <label class="field" id="rwKeyRow" hidden>
+                <span class="field-label">API key <span class="hint">memory only, never saved</span></span>
+                <input type="password" id="rwApiKey" autocomplete="off">
+              </label>
+              <label class="check">
+                <input type="checkbox" id="rwAllowRemote">
+                <span>Allow a non-local endpoint — <strong>your text leaves this machine</strong></span>
+              </label>
+              <div class="probe-result" id="rwProbe" hidden></div>
+            </div>
+
+            <label class="check">
+              <input type="checkbox" id="rwLayerA" checked>
+              <span>Strip invisible characters from the result too</span>
+            </label>
+
+            <button class="btn btn-primary btn-block" id="rwRunBtn" type="button">Rewrite</button>
+          </div>
+        </div>
+
+        <div class="result-panel" id="rwResult" hidden>
+          <div class="result-head">
+            <span class="label" id="rwResultLabel">Result</span>
+            <div class="result-actions">
+              <button class="btn btn-sm" id="rwCopyBtn" type="button">Copy</button>
+              <button class="btn btn-sm" id="rwDownloadBtn" type="button">Download</button>
+            </div>
+          </div>
+          <div class="readout" id="rwReadout"></div>
+          <pre class="result-body" id="rwOutput"></pre>
+        </div>
+      </section>
 
       <!-- 04 SETUP ---------------------------------------------------- -->
 
@@ -191,7 +307,7 @@
         <button class="icon-btn" id="keysClose" type="button" aria-label="Close">×</button>
       </div>
       <dl class="keys">
-        <dt><kbd>1</kbd>–<kbd>2</kbd></dt><dd>Switch section</dd>
+        <dt><kbd>1</kbd>–<kbd>3</kbd></dt><dd>Switch section</dd>
         <dt><kbd>Ctrl</kbd><kbd>O</kbd></dt><dd>Browse for files</dd>
         <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Move through the file list</dd>
         <dt><kbd>Enter</kbd></dt><dd>Clean the selected file</dd>

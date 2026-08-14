@@ -232,7 +232,7 @@ $("#keysBtn").addEventListener("click", () => toggleKeys(true));
 $("#keysClose").addEventListener("click", () => toggleKeys(false));
 keysModal.addEventListener("click", (e) => { if (e.target === keysModal) toggleKeys(false); });
 
-const VIEW_ORDER = ["files", "text"];
+const VIEW_ORDER = ["files", "text", "rewrite"];
 
 document.addEventListener("keydown", (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")
@@ -840,6 +840,125 @@ $("#textDownloadBtn").addEventListener("click", async () => {
   if (!textInput.value) { toast("Nothing to save"); return; }
   try {
     const res = await api("/api/text/save", { text: textInput.value, name: "cleaned.txt" });
+    await download(`/api/download?id=${encodeURIComponent(res.download_id)}`, res.name);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---------------------------------------------------------------- 03 rewrite
+
+const DEFAULT_URLS = {
+  ollama: "http://127.0.0.1:11434",
+  "openai-compatible": "http://127.0.0.1:8080/v1",
+};
+
+function syncRewriteControls() {
+  const backend = $("#rwBackend").value;
+  const strength = $("#rwStrength").value;
+  $("#rwLangRow").hidden = strength !== "backtranslate";
+  $("#rwModelBox").hidden = backend === "print-prompt";
+  $("#rwKeyRow").hidden = backend !== "openai-compatible";
+  $("#rwRunBtn").textContent = backend === "print-prompt" ? "Build prompt" : "Rewrite";
+  if (backend !== "print-prompt" && DEFAULT_URLS[backend]) {
+    const current = $("#rwBaseUrl").value.trim();
+    if (!current || Object.values(DEFAULT_URLS).includes(current)) {
+      $("#rwBaseUrl").value = DEFAULT_URLS[backend];
+    }
+  }
+}
+$("#rwBackend").addEventListener("change", syncRewriteControls);
+$("#rwStrength").addEventListener("change", syncRewriteControls);
+syncRewriteControls();
+
+$("#rwProbeBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const box = $("#rwProbe");
+  btn.disabled = true;
+  box.hidden = false;
+  box.className = "probe-result";
+  box.textContent = "Checking…";
+  try {
+    const res = await api("/api/rewrite/probe", {
+      base_url: $("#rwBaseUrl").value, backend: $("#rwBackend").value,
+    });
+    if (res.ok) {
+      box.className = "probe-result ok";
+      box.textContent = res.models && res.models.length
+        ? `Reachable. Models: ${res.models.join(", ")}`
+        : "Reachable.";
+      $("#rwModelList").replaceChildren(...(res.models || []).map((m) => el("option", { value: m })));
+      if (!$("#rwModel").value && res.models && res.models.length) $("#rwModel").value = res.models[0];
+    } else {
+      box.className = "probe-result bad";
+      box.textContent = res.error || "Not reachable.";
+    }
+  } catch (err) {
+    box.className = "probe-result bad";
+    box.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#rwRunBtn").addEventListener("click", async (e) => {
+  const text = $("#rwInput").value;
+  if (!text.trim()) { toast("Paste some text first"); return; }
+  const backend = $("#rwBackend").value;
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = backend === "print-prompt" ? "Building…" : "Rewriting…";
+  try {
+    const res = await api("/api/rewrite", {
+      text,
+      backend,
+      strength: $("#rwStrength").value,
+      model: $("#rwModel").value,
+      base_url: $("#rwBaseUrl").value,
+      api_key: $("#rwApiKey").value,
+      lang: $("#rwLang").value,
+      original_lang: $("#rwOriginalLang").value,
+      temperature: parseFloat($("#rwTemp").value) || 0.9,
+      candidates: parseInt($("#rwCandidates").value, 10) || 1,
+      timeout: parseFloat($("#rwTimeout").value) || 120,
+      layer_a_after: $("#rwLayerA").checked,
+      allow_remote: $("#rwAllowRemote").checked,
+    });
+    showRewrite(res);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    syncRewriteControls();
+  }
+});
+
+function showRewrite(res) {
+  const info = res.info || {};
+  const isPrompt = info.mode === "print-prompt";
+  $("#rwResult").hidden = false;
+  $("#rwResultLabel").textContent = isPrompt
+    ? "Prompt — paste this into any chat model"
+    : "Rewritten text";
+  $("#rwOutput").textContent = res.text;
+  $("#rwReadout").replaceChildren(...readout([
+    ["Mode", info.mode || "—"],
+    ["Approach", info.strength || "—"],
+    info.model ? ["Model", info.model] : null,
+    ["Chars in", info.input_chars],
+    info.output_chars ? ["Chars out", info.output_chars] : null,
+    res.divergence != null ? ["Divergence", `${Math.round(res.divergence * 100)}%`] : null,
+    info.candidates ? ["Tries", info.candidates] : null,
+  ]).childNodes);
+  $("#rwResult").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+$("#rwCopyBtn").addEventListener("click", () => copyText($("#rwOutput").textContent));
+$("#rwDownloadBtn").addEventListener("click", async () => {
+  try {
+    const res = await api("/api/text/save", {
+      text: $("#rwOutput").textContent, name: "rewritten.txt",
+    });
     await download(`/api/download?id=${encodeURIComponent(res.download_id)}`, res.name);
   } catch (e) {
     toast(e.message, true);

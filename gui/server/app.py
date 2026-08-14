@@ -391,6 +391,47 @@ def api_text_save(h: Handler) -> None:
     h._json({"download_id": register(target, name, origin="output"), "name": name})
 
 
+def api_rewrite_prompt(h: Handler) -> None:
+    data = h._payload()
+    prompt = bridge.build_prompt(
+        str(data.get("text") or ""),
+        strength=str(data.get("strength") or "paraphrase"),
+        lang=str(data.get("lang") or "French"),
+        original_lang=str(data.get("original_lang") or "English"),
+    )
+    h._json({"prompt": prompt})
+
+
+def api_rewrite(h: Handler) -> None:
+    data = h._payload()
+    result = bridge.rewrite(
+        str(data.get("text") or ""),
+        backend=str(data.get("backend") or "print-prompt"),
+        model=str(data.get("model") or "") or None,
+        base_url=str(data.get("base_url") or "") or None,
+        api_key=str(data.get("api_key") or "") or None,
+        strength=str(data.get("strength") or "paraphrase"),
+        lang=str(data.get("lang") or "French"),
+        original_lang=str(data.get("original_lang") or "English"),
+        timeout=float(data.get("timeout") or 120.0),
+        temperature=float(data.get("temperature") or 0.9),
+        candidates=int(data.get("candidates") or 1),
+        layer_a_after=bool(data.get("layer_a_after", True)),
+        allow_remote=bool(data.get("allow_remote")),
+    )
+    h._json(result)
+
+
+def api_rewrite_probe(h: Handler) -> None:
+    data = h._payload()
+    h._json(
+        bridge.probe_endpoint(
+            str(data.get("base_url") or "http://127.0.0.1:11434"),
+            str(data.get("backend") or "ollama"),
+        )
+    )
+
+
 ROUTES = {
     "/api/diagnostics": api_diagnostics,
     "/api/upload": api_upload,
@@ -399,6 +440,9 @@ ROUTES = {
     "/api/text/inspect": api_text_inspect,
     "/api/text/clean": api_text_clean,
     "/api/text/save": api_text_save,
+    "/api/rewrite": api_rewrite,
+    "/api/rewrite/prompt": api_rewrite_prompt,
+    "/api/rewrite/probe": api_rewrite_probe,
 }
 
 

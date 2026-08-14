@@ -90,6 +90,26 @@ Here⟨ZWSP⟩is a paragraph that looks perfectly normal.⟨WJ⟩
 **Clean text** strips them and tells you the count. Then copy the result or save
 it as `.txt`.
 
+### 03 · Rewrite (Layer B)
+
+Invisible characters are one kind of mark. Statistical watermarks live in the
+word choice itself, so the only way out is rewriting the text — which replaces
+your wording with the rewriting model's. The screen says so, and no tool can
+certify the result passes a vendor's detector.
+
+Five approaches (paraphrase, humanize, back-translate, structural, code) and
+three ways to run them:
+
+- **Just give me the prompt** — the default. Produces a prompt you can paste into
+  any chat model. Nothing is sent anywhere.
+- **Ollama on this machine** — local model, press **Test** to list what you have.
+- **OpenAI-compatible endpoint** — for a local llama.cpp/vLLM server.
+
+Non-local endpoints are refused unless you tick *Allow a non-local endpoint*,
+which is labelled with what it means: your text leaves the machine. API keys
+live in memory for the length of one request — never on disk, never in a command
+line.
+
 ## What maps to what
 
 Every screen is a front end for the same scripts the CLI uses, called in-process:
@@ -99,6 +119,7 @@ Every screen is a front end for the same scripts the CLI uses, called in-process
 | Files → scan | `inspect_file.py` · `inspect_image.py` · `inspect_text.py` |
 | Files → clean | `clean_file.py` · `clean_image.py` |
 | Text | `inspect_text.py` · `clean_text.py` |
+| Rewrite | `rewrite_text.py` |
 
 Markdown and HTML get the text scan too, since `clean_container` scrubs their
 bodies — the report would otherwise hide characters the clean would remove.
@@ -127,7 +148,8 @@ want SynthID scoring.
   a table built at startup; a request path is never joined onto a directory.
 - Files you add are copied to a temporary folder that is deleted when the app
   exits. Your originals are never modified.
-- No telemetry and no network access at all.
+- No telemetry, no network access — except a rewrite backend you configure
+  yourself.
 
 ---
 
@@ -140,4 +162,5 @@ python3 gui/launch.py --no-browser    # just print the URL
 ```
 
 Environment variables the app respects: `WATERMARKS_SKILL_DIR`,
-`WATERMARKS_MAX_INPUT_BYTES` and `REVERSE_SYNTHID_DIR`.
+`WATERMARKS_MAX_INPUT_BYTES`, `REVERSE_SYNTHID_DIR`, and the
+`WATERMARKS_REWRITE_*` family.
