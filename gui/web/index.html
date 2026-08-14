@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>watermarks-remover</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="19" height="19" rx="1"></rect>
+        <path d="M6 12h4M14 12h4M12 6v4M12 14v4"></path>
+      </svg>
+      <span class="brand-name">watermarks<span class="brand-dash">-</span>remover</span>
+      <span class="brand-tag">local only</span>
+    </div>
+    <div class="topbar-right">
+      <div class="toolstrip" id="toolStrip"></div>
+      <button class="icon-btn" id="keysBtn" type="button" title="Keyboard shortcuts"
+        aria-label="Keyboard shortcuts">⌘</button>
+      <button class="icon-btn" id="themeBtn" type="button" title="Switch light and dark"
+        aria-label="Switch light and dark">◐</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <nav class="rail" id="rail" role="tablist" aria-label="Sections">
+      <button type="button" class="rail-item is-active" data-view="files"
+        role="tab" aria-selected="true" aria-controls="view-files">
+        <em>01</em><span>Files</span>
+      </button>
+      <div class="rail-foot">
+        <span class="rail-note">Nothing leaves<br>this computer.</span>
+      </div>
+    </nav>
+
+    <main class="stage" id="stage">
+
+      <!-- 01 FILES ---------------------------------------------------- -->
+      <section class="view is-active" data-view="files" id="view-files" role="tabpanel"
+        aria-labelledby="tab-files">
+        <div class="view-head">
+          <h1>Files</h1>
+          <p>Scan documents and images for hidden provenance marks, then strip them.</p>
+        </div>
+
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-inner">
+            <svg class="drop-icon" viewBox="0 0 48 48" aria-hidden="true">
+              <path d="M24 32V10M24 10l-8 8M24 10l8 8"></path>
+              <path d="M8 30v6a2 2 0 0 0 2 2h28a2 2 0 0 0 2-2v-6"></path>
+            </svg>
+            <p class="drop-title">Drop files here</p>
+            <p class="drop-sub">PNG · JPEG · PDF · DOCX · ODT · SVG · HTML · Markdown · plain text</p>
+            <div class="drop-actions">
+              <button class="btn btn-primary" id="browseBtn" type="button">Browse…</button>
+              <input type="file" id="fileInput" multiple hidden>
+            </div>
+          </div>
+        </div>
+
+        <div class="summary" id="summary" hidden>
+          <div class="summary-stats" id="summaryStats"></div>
+          <div class="summary-right">
+            <div class="seg" id="filterSeg" role="group" aria-label="Filter files">
+              <button type="button" class="seg-btn is-active" data-filter="all">All</button>
+              <button type="button" class="seg-btn" data-filter="found">Marks</button>
+              <button type="button" class="seg-btn" data-filter="clean">Clean</button>
+            </div>
+            <button class="btn btn-sm" id="cleanAllBtn" type="button">Clean all</button>
+            <button class="btn btn-sm" id="downloadAllBtn" type="button" hidden>Download all</button>
+            <button class="btn btn-sm btn-quiet" id="clearBtn" type="button">Clear</button>
+          </div>
+          <div class="progress" id="progress" hidden><div class="progress-bar" id="progressBar"></div></div>
+        </div>
+
+        <div class="split" id="filesSplit" hidden>
+          <ul class="file-list" id="fileList" role="listbox" tabindex="0"
+            aria-label="Scanned files"></ul>
+          <div class="detail" id="detail" aria-live="polite"></div>
+        </div>
+
+        <details class="options" id="fileOptions">
+          <summary><span class="label">Advanced options</span></summary>
+          <div class="options-grid">
+            <label class="field">
+              <span class="field-label">Treat file as</span>
+              <select id="optAs">
+                <option value="auto">Detect automatically</option>
+                <option value="text">Plain text</option>
+                <option value="image">Image (PNG / JPEG)</option>
+                <option value="container">Document (PDF, DOCX, …)</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="optAggressive">
+              <span>Flag look-alike letters (Cyrillic “а”, Greek “ο”, …)</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="optAggressiveClean">
+              <span>Also replace those letters when cleaning</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="optNfkc">
+              <span>Normalise text (NFKC) — fixes ﬁ, ①, full-width forms</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="optKeepMeta">
+              <span>Images: keep camera metadata, drop only AI / C2PA</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="optScrubDoc">
+              <span>Word / ODT: also strip invisible characters from the document text
+                <em class="sub-note">off by default — the scripts never touch document text</em></span>
+            </label>
+            <label class="check sub">
+              <input type="checkbox" id="optConvertNbsp">
+              <span>…and turn no-break spaces into plain spaces
+                <em class="sub-note">usually deliberate typography (“Table 1”, “p = 0.05”)</em></span>
+            </label>
+            <label class="check" id="synthidRow" hidden>
+              <input type="checkbox" id="optSynthid">
+              <span>Images: score SynthID pixels (slow, needs setup)</span>
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <!-- 02 TEXT ----------------------------------------------------- -->
+
+      <!-- 03 REWRITE -------------------------------------------------- -->
+
+      <!-- 04 SETUP ---------------------------------------------------- -->
+
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="modal" id="keysModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <div class="modal-head">
+        <span class="label">Keyboard</span>
+        <button class="icon-btn" id="keysClose" type="button" aria-label="Close">×</button>
+      </div>
+      <dl class="keys">
+        <dt><kbd>Ctrl</kbd><kbd>O</kbd></dt><dd>Browse for files</dd>
+        <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Move through the file list</dd>
+        <dt><kbd>Enter</kbd></dt><dd>Clean the selected file</dd>
+        <dt><kbd>Ctrl</kbd><kbd>Enter</kbd></dt><dd>Clean every file in the list</dd>
+        <dt><kbd>?</kbd></dt><dd>This list</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+<script src="/assets/app.js"></script>
+</body>
+</html>

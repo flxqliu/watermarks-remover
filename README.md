@@ -28,6 +28,18 @@ Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **Ope
 Skill path: [`skills/remove-ai-marks/`](skills/remove-ai-marks/)  
 (migration: formerly `remove-claude-marks`; slash alias `/remove-claude-marks` still documented)
 
+## Desktop app (no terminal needed)
+
+```bash
+python3 gui/launch.py
+```
+
+Drag files in, read the verdict, click clean. Paste text to see hidden characters revealed in
+place. Python 3.10+ stdlib only — no packages to install. Runs on **Windows, macOS and Linux**,
+loopback-only, with every action mapped to the same scripts the CLI calls.
+
+Details: [`gui/README.md`](gui/README.md)
+
 ## Install (agent skill)
 
 ```bash

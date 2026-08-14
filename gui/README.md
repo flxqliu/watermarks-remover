@@ -1,0 +1,127 @@
+# watermarks-remover — desktop app
+
+A point-and-click front end for the `remove-ai-marks` scripts. No terminal, no
+Python packages to install, and nothing leaves your computer.
+
+Works on **Windows, macOS and Linux**.
+
+---
+
+## Start it
+
+```bash
+python3 gui/launch.py
+```
+
+The app opens in its own window if you have [pywebview](https://pywebview.flowrl.com/)
+installed, and in your default browser otherwise. Both are the same app — the
+page is served from your own machine on `127.0.0.1`.
+
+**Requirements:** Python 3.10 or newer, and nothing else. If Windows says Python
+is missing, install it from [python.org](https://www.python.org/downloads/) and
+tick *“Add python.exe to PATH”* during setup.
+
+Optional native window:
+
+```bash
+pip install pywebview
+```
+
+---
+
+## The Files screen
+
+Drag files in, or press **Browse…**. Every file is scanned as it arrives and
+gets a verdict: *marks* or *clean*. Open one to see the findings, the exact
+hidden characters it contains, and where they sit in the text.
+
+**Clean this file** strips the marks and hands back a copy to download —
+`draft.md` → `draft.cleaned.md`. The original is never touched.
+
+Handles PNG, JPEG, PDF, DOCX, ODT, SVG, HTML, Markdown and plain text. Batch
+work is fine: **Clean all**, then **Download all** for a zip.
+
+| Option | Effect |
+| --- | --- |
+| Treat file as | Overrides format detection, same as the CLI's `--as` |
+| Flag look-alike letters | Reports Cyrillic/Greek letters posing as Latin ones |
+| Also replace those letters | Rewrites them during a clean (`--aggressive-homoglyphs`) |
+| Normalise text (NFKC) | Folds ﬁ, ①, full-width forms into plain equivalents |
+| Keep camera metadata | Images: drop only AI/C2PA segments, keep EXIF |
+| Score SynthID | Appears only when `REVERSE_SYNTHID_DIR` is configured |
+
+#### Word and ODT documents
+
+A `.docx`/`.odt` is a zip, and its prose lives in `word/document.xml` /
+`content.xml`. Two consequences worth knowing:
+
+- **`inspect_text.py` must not be pointed at one.** It reads the file as text,
+  so it scans deflate-compressed bytes and reports whatever codepoints happen to
+  fall out. The counts are noise: a document with nothing hidden in it can report
+  a dozen "suspicious" characters, and the number changes with compression, not
+  content. Use `inspect_file.py`, or this app.
+- **`inspect_container` only reads metadata**, so hidden characters in the actual
+  text were invisible to both the CLI and, until now, this app. The Files screen
+  unzips the text parts and reports them under *Hidden characters inside the
+  document text*, with the reveal view showing the surrounding sentence.
+
+Cleaning still defaults to upstream behaviour — metadata only. *Word / ODT: also
+strip invisible characters from the document text* turns on a text pass that
+rewrites only the character data between tags, leaving all markup byte-exact, and
+re-zips with the original entry order and compression.
+
+No-break spaces get their own sub-option and stay put by default: in real
+documents they are almost always deliberate typography (`Table 1`, `p = 0.05`,
+`Fig. 3`) rather than a watermark, and converting them changes how the document
+breaks across lines.
+
+## What maps to what
+
+Every screen is a front end for the same scripts the CLI uses, called in-process:
+
+| Screen | Script |
+| --- | --- |
+| Files → scan | `inspect_file.py` · `inspect_image.py` · `inspect_text.py` |
+| Files → clean | `clean_file.py` · `clean_image.py` |
+
+Markdown and HTML get the text scan too, since `clean_container` scrubs their
+bodies — the report would otherwise hide characters the clean would remove.
+
+---
+
+## Windows notes
+
+The skill scripts pass `preexec_fn` to `subprocess`, which is POSIX-only — on
+Windows that made every `exiftool`/`c2patool` call raise, so the tools looked
+broken even when installed. `server/compat.py` drops that argument on Windows
+and hides the console window the child would otherwise flash. Nothing in
+`skills/` is modified.
+
+`setup_synthid.sh` is still a shell script; run it from Git Bash or WSL if you
+want SynthID scoring.
+
+---
+
+## Privacy and safety
+
+- The server binds to `127.0.0.1` only, on a random port.
+- Every API call needs a session token generated at launch, so other pages open
+  in your browser cannot drive it.
+- The only files the server will hand out are the three in `gui/web/`, listed in
+  a table built at startup; a request path is never joined onto a directory.
+- Files you add are copied to a temporary folder that is deleted when the app
+  exits. Your originals are never modified.
+- No telemetry and no network access at all.
+
+---
+
+## Options
+
+```bash
+python3 gui/launch.py --port 8731     # fixed port
+python3 gui/launch.py --browser       # force the browser over the native window
+python3 gui/launch.py --no-browser    # just print the URL
+```
+
+Environment variables the app respects: `WATERMARKS_SKILL_DIR`,
+`WATERMARKS_MAX_INPUT_BYTES` and `REVERSE_SYNTHID_DIR`.
