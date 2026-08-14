@@ -127,6 +127,10 @@ REVERSE_SYNTHID_DIR=~/reverse-SynthID \
 full upstream `requirements.txt`, which adds `torch`/`diffusers` for the
 upstream VAE bypass this project does not use).
 
+On Windows use `setup_synthid.ps1` (`-Dir`, `-Ref`, `-Full`), which creates the
+venv at `.venv\Scripts\` — the layout `image_meta.py` already looks for on
+`os.name == "nt"`.
+
 ### Option 2: local Docker build
 
 ```bash
@@ -171,6 +175,15 @@ SCRIPTS=skills/remove-ai-marks/scripts
 NOAI_WATERMARK_DIR=~/noai-watermark \
 ~/noai-watermark/.venv/bin/python "$SCRIPTS/clean_ctrlregen.py" shot.png -o shot.ctrlregen.png
 ```
+
+On Windows use `setup_ctrlregen.ps1` (same flags as `-Dir`, `-Ref`, `-Python`);
+the venv lands in `.venv\Scripts\`, which `clean_image.py` already resolves.
+It picks the torch wheel index from the GPU's **compute capability** rather
+than the CUDA version `nvidia-smi` prints — that number is the maximum the
+*driver* supports, and drivers are backward compatible, so deriving the wheel
+tag from it installs `cu130` on a Pascal card whose kernels were dropped in
+`cu128`. The script forces `cu126` below compute capability 7.5 and then
+verifies the result with `torch.cuda.get_arch_list()`.
 
 ### From `clean_image.py`
 
