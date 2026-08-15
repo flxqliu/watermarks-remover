@@ -84,30 +84,23 @@ def scan_file(
     report = inspect_container(path)
     findings = list(report.findings)
     confidences = [classify_finding_confidence(f) for f in report.findings]
-    suspicious = 0
+    # Layer A body-scan findings (and count) already come from
+    # inspect_container() for markdown/html; it mirrors clean_container().
+    suspicious = report.layer_a_total
     stylometry_dict = None
 
-    # Text-bearing containers also get a Layer A scan of their visible text,
-    # mirroring the skill's "container + Layer A" workflow.
-    if report.format in ("html", "markdown"):
+    if check_stylometry and report.format in ("html", "markdown"):
         try:
             text = path.read_text(encoding="utf-8", errors="surrogateescape")
         except OSError:
             text = ""
         if text:
-            t_report = inspect_text(text)
-            t_findings, t_confidences, t_suspicious = text_findings(t_report)
-            findings.extend(t_findings)
-            confidences.extend(t_confidences)
-            suspicious = t_suspicious
-
-            if check_stylometry:
-                s_rep = score_text_stylometry(text, path=name)
-                stylometry_dict = s_rep.to_dict()
-                if s_rep.score >= 0.65:
-                    findings.append(f"stylometry [high_probability] score {s_rep.score:.2f} ({s_rep.confidence_level})")
-                    confidences.append("probable")
-                    suspicious += 1
+            s_rep = score_text_stylometry(text, path=name)
+            stylometry_dict = s_rep.to_dict()
+            if s_rep.score >= 0.65:
+                findings.append(f"stylometry [high_probability] score {s_rep.score:.2f} ({s_rep.confidence_level})")
+                confidences.append("probable")
+                suspicious += 1
 
     item = {
         "path": name,
