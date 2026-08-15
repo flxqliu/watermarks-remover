@@ -289,6 +289,43 @@ def test_clean_container_markdown_file(tmp_path: Path):
     assert result["format"] == "markdown"
 
 
+def test_inspect_container_reports_layer_a_body_text(tmp_path: Path):
+    """inspect must flag invisible carriers that clean would strip.
+
+    Regression: markdown/html routed to the container inspector, which never
+    ran the Layer A scan, so identical bytes were reported suspicious as .txt
+    and clean as .md while clean_container() went on to remove them.
+    """
+    body = "Hello​world‌ test⁠end.\n"
+    for name in ("x.md", "x.html"):
+        src = tmp_path / name
+        src.write_text(body, encoding="utf-8")
+        report = inspect_container(src)
+        assert report.layer_a_total == 3, name
+        assert report.to_dict()["suspicious_total"] == 3, name
+        codepoints = {h["codepoint"] for h in report.layer_a_hits}
+        assert {"U+200B", "U+200C", "U+2060"} <= codepoints, name
+        assert any(f.startswith("layer-a:") for f in report.findings), name
+
+
+def test_inspect_container_clean_leaves_no_layer_a(tmp_path: Path):
+    """The post-clean re-inspect must come back with nothing left."""
+    src = tmp_path / "x.md"
+    src.write_text("Hi​‌there\n", encoding="utf-8")
+    dest = tmp_path / "x.cleaned.md"
+    clean_container(src, dest)
+    assert inspect_container(dest).layer_a_total == 0
+
+
+def test_inspect_container_clean_file_stays_clean(tmp_path: Path):
+    """No false positives on ordinary prose."""
+    src = tmp_path / "x.md"
+    src.write_text("# Title\n\nOrdinary prose, nothing hidden.\n", encoding="utf-8")
+    report = inspect_container(src)
+    assert report.layer_a_total == 0
+    assert report.layer_a_hits == []
+
+
 def test_inspect_container_svg(tmp_path: Path):
     src = tmp_path / "a.svg"
     src.write_bytes(

@@ -67,6 +67,12 @@ class ContainerInspectReport:
     tools: dict[str, Any] = field(default_factory=dict)
     details: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # Layer A (invisible/format Unicode) scan of the text body, populated only
+    # for the formats clean_container() actually scrubs. Without it, inspect
+    # reported a markdown/html file carrying invisible carriers as clean while
+    # clean then went on to remove them.
+    layer_a_total: int = 0
+    layer_a_hits: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -81,6 +87,10 @@ class ContainerInspectReport:
             "tools": self.tools,
             "details": self.details,
             "notes": self.notes,
+            # Same key as TextInspectReport so every caller — including the
+            # HTTP server's `suspicious` flag — reads both report kinds alike.
+            "suspicious_total": self.layer_a_total,
+            "layer_a_hits": self.layer_a_hits,
         }
 
 
@@ -818,14 +828,31 @@ def inspect_container(path: Path) -> ContainerInspectReport:
     elif fmt == "odt":
         has_c2pa, has_ai, findings, details = inspect_odt(data)
     elif fmt == "html":
-        text = data.decode("utf-8", errors="replace")
-        has_c2pa, has_ai, findings, details = inspect_html(text)
+        # surrogateescape, not replace: clean_container() decodes the same way,
+        # and U+FFFD substitutions would make the two disagree on the counts.
+        body = data.decode("utf-8", errors="surrogateescape")
+        has_c2pa, has_ai, findings, details = inspect_html(body)
     elif fmt == "markdown":
-        text = data.decode("utf-8", errors="replace")
-        has_c2pa, has_ai, findings, details = inspect_markdown(text)
+        body = data.decode("utf-8", errors="surrogateescape")
+        has_c2pa, has_ai, findings, details = inspect_markdown(body)
     else:
         has_c2pa, has_ai, findings = False, False, [f"unsupported container: {fmt}"]
         details = {"unsupported": True}
+
+    # Layer A body scan for exactly the formats clean_container() scrubs, so
+    # inspect predicts clean rather than contradicting it.
+    layer_a_total = 0
+    layer_a_hits: list[dict] = []
+    if fmt in ("markdown", "html"):
+        from text_unicode import inspect_text  # local import to avoid cycles
+
+        ta = inspect_text(body).to_dict()
+        layer_a_total = ta["suspicious_total"]
+        layer_a_hits = ta["hits"]
+        for h in layer_a_hits:
+            findings.append(
+                f"layer-a: {h['codepoint']} {h['label']} x{h['count']} ({h['kind']})"
+            )
 
     notes: list[str] = []
     if fmt == "pdf":
@@ -834,6 +861,11 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         notes.append("DOCX: only metadata/provenance parts are scanned; visible body text is ignored")
     if "unsupported" in details:
         notes.append(f"format not fully inspected: {fmt}")
+    if layer_a_total:
+        notes.append(
+            f"layer A: {layer_a_total} invisible/format codepoint(s) in body text; "
+            "clean removes these"
+        )
 
     if fmt in ("svg", "pdf", "docx") and not tools:
         tools = run_optional_tools(path)
@@ -847,6 +879,8 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         tools=tools,
         details=details,
         notes=notes,
+        layer_a_total=layer_a_total,
+        layer_a_hits=layer_a_hits,
     )
 
 
