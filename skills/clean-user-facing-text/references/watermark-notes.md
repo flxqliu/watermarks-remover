@@ -4,7 +4,7 @@
 
 Invisible Unicode, bidirectional controls, tag characters, exotic spaces, and selected confusables can carry machine-readable signals or cause broken copy, search, and diffs.
 
-`clean_text.py` removes or normalizes known carriers and reports exact counts. By default it preserves load-bearing characters used by emoji, CJK and Mongolian variation sequences, joining scripts, and legitimate RTL directional marks or isolates. The lightweight workflow also disables space normalization by default so multilingual typography remains intact. Aggressive flags can damage intentional text and should remain opt-in.
+`clean_text.py` removes or normalizes known carriers and reports exact counts. By default it preserves contextual characters used by emoji, joining scripts, Mongolian selectors, Khmer inherent vowels, Hangul fillers, and Arabic/Syriac orthography. The lightweight workflow also disables space normalization by default so multilingual typography remains intact. Aggressive flags can damage intentional text and should remain opt-in.
 
 ## Statistical marks
 

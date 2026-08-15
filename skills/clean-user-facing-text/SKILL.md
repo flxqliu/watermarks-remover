@@ -1,6 +1,6 @@
 ---
 name: clean-user-facing-text
-description: Clean and finalize authorized natural-language text intended for readers by auditing suspicious invisible Unicode and rewriting prose while preserving facts and meaning. Use when the user asks Cursor or Codex to clean, humanize, polish, or finalize articles, manuscripts, reports, documentation, emails, product copy, UI text, Markdown, or HTML prose, or when an installed Rule or AGENTS.md explicitly requires this workflow. Do not use for code-only tasks or undisclosed authorship evasion; leave code, commands, identifiers, paths, APIs, formulas, citations, required disclosures, and verbatim quotations unchanged.
+description: Clean and finalize authorized natural-language text intended for readers by auditing suspicious invisible Unicode and rewriting prose while preserving facts and meaning. Use in Cursor when the user asks to clean, humanize, polish, or finalize articles, manuscripts, reports, documentation, emails, product copy, UI text, Markdown, or HTML prose, or when an installed Cursor Rule explicitly requires this workflow. Do not use for code-only tasks or undisclosed authorship evasion; leave code, commands, identifiers, paths, APIs, formulas, citations, required disclosures, and verbatim quotations unchanged.
 ---
 
 # Clean user-facing text
@@ -43,7 +43,7 @@ Use `-` for stdin. Prefer a new `*.cleaned.*` output unless the user explicitly 
 
 Use `--no-normalize-spaces` by default so NBSP, narrow no-break spaces, figure spaces, and CJK ideographic spaces retain their layout semantics. Normalize spaces only when the user requests it.
 
-Do not use `--aggressive-homoglyphs`, `--nfkc`, `--strip-emoji-glue`, or `--strip-bidi` unless the user requests aggressive normalization and accepts possible changes to multilingual text, emoji, directionality, or typography.
+Do not use `--aggressive-homoglyphs`, `--nfkc`, or `--strip-emoji-glue` unless the user requests aggressive normalization and accepts possible changes to multilingual text, emoji, directionality, or typography.
 
 The scripts support plain text, source text, Markdown, and HTML source as text. For mixed Markdown or HTML, inspect hit positions first. If a hit falls inside protected code, attributes, or another non-prose span, do not run whole-file cleanup; clean only the prose segments or leave that hit unchanged. Do not pass binary containers such as PDF, DOCX, images, or archives.
 
