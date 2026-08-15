@@ -115,7 +115,7 @@ Intended for **your own** content (privacy, hygiene, research). Do not market re
 | Pasted / clipboard text | temp file → `/inspect` then `/clean` (text) |
 | `.txt` / code | text Layer A (+ formatter for code) |
 | `.md` / `.html` | container clean (frontmatter/meta) + Layer A |
-| `.png` / `.jpg` / `.jpeg` / `.webp` | image metadata strip |
+| `.png` / `.jpg` / `.jpeg` / `.webp` / `.avif` / `.heic` | image metadata strip |
 | `.svg` / `.pdf` / `.docx` / `.odt` | container metadata strip |
 | Directory / website | aggregate audit via the service CLIs (see below) |
 
