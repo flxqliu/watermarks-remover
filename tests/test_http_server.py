@@ -295,5 +295,9 @@ def test_cors_other_origin_gets_nothing(conn, monkeypatch):
 
 def test_cors_wildcard_rejected_on_cli(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["server.py", "--cors-origin", "*"])
+    # main() rebinds the module globals it parses; monkeypatch restores them afterwards
+    monkeypatch.setattr(server, "CORS_ORIGINS", server.CORS_ORIGINS)
+    monkeypatch.setattr(server, "API_KEY", server.API_KEY)
     assert server.main() == 2
     assert "not allowed" in capsys.readouterr().err
+    assert "*" in server.CORS_ORIGINS  # (until teardown) proves main() really parsed it
