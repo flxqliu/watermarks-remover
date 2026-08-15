@@ -133,7 +133,7 @@ curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 -w0 notes.md)\", \"name\": \"notes.md\"}"
 ```
 
-The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request. Loopback-only bind by default (`--host` to override); intended for a trusted network.
+The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request. Loopback-only bind by default (`--host` to override); intended for a trusted network. Browser clients on another origin are blocked by default (no CORS headers); to allow one, pass `--cors-origin https://your.app` (repeatable) or set `WATERMARKS_SERVER_CORS_ORIGINS` to a comma-separated list of exact origins — wildcards are refused.
 
 ## Docker / compose
 
@@ -202,6 +202,7 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | Var | Reaches | Purpose |
 | --- | --- | --- |
 | `WATERMARKS_SERVER_API_KEY` | `wr-core` (via compose `environment`) | Require `Authorization: Bearer <key>` on the HTTP API |
+| `WATERMARKS_SERVER_CORS_ORIGINS` | `wr-core` | Comma-separated exact browser origins allowed to call the API (default: none, no CORS headers) |
 | `HF_TOKEN` | harness/heavy services | Hugging Face token for gated models |
 | `WATERMARKS_SERVICE_URL` | client only (skill / curl) | Where to reach the service; default `http://127.0.0.1:8765` |
 | `WATERMARKS_REWRITE_BACKEND` | `rewrite_text.py` hook | `print-prompt` (default) / `ollama` / `openai-compatible` |

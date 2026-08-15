@@ -237,3 +237,63 @@ def test_404(conn):
     assert status == 404
     status, body = _post(conn, "/nope", {"file": _b64(b"x")})
     assert status == 404
+
+
+# --- CORS allow-list (opt-in) --------------------------------------------------
+
+
+def _headers(conn, method: str, path: str, **hdrs) -> tuple[int, dict]:
+    conn.request(method, path, headers=hdrs)
+    resp = conn.getresponse()
+    resp.read()
+    return resp.status, {k.lower(): v for k, v in resp.getheaders()}
+
+
+def test_cors_off_by_default(conn):
+    status, hdrs = _headers(conn, "GET", "/health", Origin="http://localhost:8766")
+    assert status == 200
+    assert "access-control-allow-origin" not in hdrs
+    assert "vary" not in hdrs
+    status, hdrs = _headers(conn, "OPTIONS", "/clean", Origin="http://localhost:8766")
+    assert status == 404
+    assert "access-control-allow-origin" not in hdrs
+
+
+def test_cors_allowlisted_origin(conn, monkeypatch):
+    monkeypatch.setattr(server, "CORS_ORIGINS", frozenset({"http://localhost:8766"}))
+    status, hdrs = _headers(conn, "GET", "/health", Origin="http://localhost:8766")
+    assert status == 200
+    assert hdrs["access-control-allow-origin"] == "http://localhost:8766"
+    assert hdrs["vary"] == "Origin"
+    # preflight for an allowed origin succeeds without auth (browsers never send it there)
+    monkeypatch.setattr(server, "API_KEY", "sekret")
+    status, hdrs = _headers(conn, "OPTIONS", "/clean", Origin="http://localhost:8766")
+    assert status == 204
+    assert hdrs["access-control-allow-origin"] == "http://localhost:8766"
+    assert "authorization" in hdrs["access-control-allow-headers"].lower()
+    assert "POST" in hdrs["access-control-allow-methods"]
+    # ...but the real request still needs the key
+    status, hdrs = _headers(conn, "GET", "/health", Origin="http://localhost:8766")
+    assert status == 401
+    assert hdrs["access-control-allow-origin"] == "http://localhost:8766"  # so the browser can read the 401
+
+
+def test_cors_other_origin_gets_nothing(conn, monkeypatch):
+    monkeypatch.setattr(server, "CORS_ORIGINS", frozenset({"http://localhost:8766"}))
+    status, hdrs = _headers(conn, "GET", "/health", Origin="https://evil.example")
+    assert status == 200
+    assert "access-control-allow-origin" not in hdrs
+    assert hdrs["vary"] == "Origin"
+    status, hdrs = _headers(conn, "OPTIONS", "/clean", Origin="https://evil.example")
+    assert status == 404
+    assert "access-control-allow-origin" not in hdrs
+    # no Origin header at all (curl / same-origin) -> unchanged behaviour
+    status, hdrs = _headers(conn, "GET", "/health")
+    assert status == 200
+    assert "access-control-allow-origin" not in hdrs
+
+
+def test_cors_wildcard_rejected_on_cli(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["server.py", "--cors-origin", "*"])
+    assert server.main() == 2
+    assert "not allowed" in capsys.readouterr().err

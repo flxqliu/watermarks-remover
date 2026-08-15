@@ -52,6 +52,15 @@ VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
 # `Authorization: Bearer <key>`. Empty means no auth (default).
 API_KEY = os.environ.get("WATERMARKS_SERVER_API_KEY", "").strip()
 
+# Optional CORS allow-list for browser clients (comma-separated exact origins,
+# e.g. "http://localhost:8766,https://example.github.io"). Empty (default) means
+# no CORS headers at all, i.e. browsers on other origins cannot read responses.
+# "*" is deliberately not special-cased: an open allow-list on an API that reads
+# arbitrary files is the wrong default, so it must be an explicit origin list.
+CORS_ORIGINS: frozenset[str] = frozenset(
+    o.strip().rstrip("/") for o in os.environ.get("WATERMARKS_SERVER_CORS_ORIGINS", "").split(",") if o.strip()
+)
+
 # Body cap for the JSON envelope. Base64 inflates by 4/3, so the decoded file
 # stays well under MAX_INPUT_BYTES for the same cap.
 MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
@@ -324,6 +333,38 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         return header == f"Bearer {API_KEY}"
 
+    def _cors_origin(self) -> str | None:
+        """Return the request Origin if it is on the allow-list, else None."""
+        if not CORS_ORIGINS:
+            return None
+        origin = self.headers.get("Origin", "").strip().rstrip("/")
+        return origin if origin and origin in CORS_ORIGINS else None
+
+    def _send_cors_headers(self) -> None:
+        if not CORS_ORIGINS:
+            return
+        self.send_header("Vary", "Origin")  # responses differ per Origin once CORS is on
+        origin = self._cors_origin()
+        if origin is not None:
+            self.send_header("Access-Control-Allow-Origin", origin)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 (http.server API)
+        # Preflight carries no credentials by definition, so it is answered
+        # before auth — but only for allow-listed origins; everyone else gets
+        # the same 404 an unknown route would.
+        origin = self._cors_origin()
+        if origin is None:
+            self._respond(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
+            return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _read_json(self) -> dict[str, Any] | None:
         raw = self.headers.get("Content-Length")
         if raw is None or not raw.isdigit():
@@ -345,6 +386,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -474,11 +516,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global API_KEY  # noqa: PLW0603 — CLI overrides env
+    global API_KEY, CORS_ORIGINS  # noqa: PLW0603 — CLI overrides env
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default=os.environ.get("WATERMARKS_SERVER_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("WATERMARKS_SERVER_PORT", "8765")))
     p.add_argument("--api-key", default=API_KEY, help="require this bearer token (default: none)")
+    p.add_argument(
+        "--cors-origin",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="allow this browser origin to call the API (repeatable; exact match, no wildcard). "
+        "Default: none — no CORS headers are sent. Env: WATERMARKS_SERVER_CORS_ORIGINS (comma-separated).",
+    )
     p.add_argument("-V", "--version", action="store_true", help="print version and exit")
     args = p.parse_args()
 
@@ -487,6 +537,11 @@ def main() -> int:
         return 0
 
     API_KEY = args.api_key
+    if args.cors_origin:
+        CORS_ORIGINS = frozenset(o.strip().rstrip("/") for o in args.cors_origin if o.strip())
+    if "*" in CORS_ORIGINS:
+        eprint("error: --cors-origin must be an explicit origin, '*' is not allowed")
+        return 2
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         eprint(f"warning: binding {args.host} — intended for a trusted network only")
@@ -494,6 +549,8 @@ def main() -> int:
         eprint("API key required for requests")
     else:
         eprint("warning: no API key set — only bind to loopback or a trusted network")
+    if CORS_ORIGINS:
+        eprint("CORS enabled for: " + ", ".join(sorted(CORS_ORIGINS)))
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     eprint(f"watermarks-remover service {VERSION} on http://{args.host}:{args.port}")
