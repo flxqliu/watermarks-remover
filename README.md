@@ -669,6 +669,10 @@ make smoke                          # quick CLI smoke on fixtures
 
 ## Changelog
 
+### Unreleased
+
+- **Fix `inspect` missing Layer A carriers in markdown/HTML**: `inspect_container` never scanned the document body, so a `.md` or `.html` file holding invisible Unicode came back `suspicious: false` while `clean_container` went on to strip it — the same bytes saved as `.txt` were correctly flagged. The scan now runs for exactly the formats `clean_container` scrubs, so inspect predicts clean. Container reports gain `suspicious_total` (the same key `TextInspectReport` uses, so the HTTP `suspicious` flag and the `inspect_file` exit code pick it up) and `layer_a_hits`
+
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
 
 **Service / Docker distribution**
