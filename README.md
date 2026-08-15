@@ -45,6 +45,36 @@ ln -sfn "$(pwd)/skills/remove-ai-marks" ~/.grok/skills/remove-ai-marks
 
 Invoke with `/remove-ai-marks` or ask to “strip AI watermarks / C2PA / Claude marks / SynthID-class text.”
 
+### Optional Cursor text-only skill
+
+[`skills/clean-user-facing-text/`](skills/clean-user-facing-text/) is a
+self-contained Cursor skill for authorized manuscripts, documentation, and web
+copy. It excludes image, C2PA, service, and external-model tooling.
+
+Install it into `~/.cursor/skills/clean-user-facing-text`:
+
+```bash
+python3 install_skill.py
+```
+
+On Windows, use `py install_skill.py`. The `install-skill.sh` wrapper is
+provided for macOS/Linux shells. Existing installations are preserved unless
+you pass `--force`; replacement is staged first and the previous install is
+kept as a uniquely named backup.
+
+Skill invocation is model-selected. Projects that explicitly adopt this
+workflow can also copy the optional rule:
+
+```bash
+mkdir -p /path/to/project/.cursor/rules
+cp integrations/cursor/clean-user-facing-text.mdc \
+  /path/to/project/.cursor/rules/clean-user-facing-text.mdc
+```
+
+For all projects, put the same instruction in Cursor **User Rules** instead.
+Rules improve consistency but remain model instructions; Cursor does not expose
+a deterministic pre-send filter for final chat responses.
+
 ### Start the service
 
 The fastest path is a local HTTP server (Python 3.10+ stdlib only — no deps, no Docker):

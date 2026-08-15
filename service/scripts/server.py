@@ -44,6 +44,7 @@ from common import (  # noqa: E402
 from container_meta import clean_container, inspect_container  # noqa: E402
 from format_dispatch import classify_bytes  # noqa: E402
 from image_meta import clean_image, inspect_image  # noqa: E402
+from score_stylometry import score_text_stylometry  # noqa: E402
 from text_unicode import clean_text, inspect_text  # noqa: E402
 
 VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
@@ -84,6 +85,7 @@ def capabilities() -> dict[str, Any]:
         },
         "scorers": {
             "synthid": bool(os.environ.get("REVERSE_SYNTHID_DIR")),
+            "stylometry": True,
         },
         "harnesses": {
             "markllm": bool(os.environ.get("MARKLLM_DIR")),
@@ -165,7 +167,13 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                             type="object",
                             properties={k: _schema(type="boolean") for k in ("ctrlregen", "diffusion")},
                         ),
-                        "scorers": _schema(type="object", properties={"synthid": _schema(type="boolean")}),
+                        "scorers": _schema(
+                            type="object",
+                            properties={
+                                "synthid": _schema(type="boolean"),
+                                "stylometry": _schema(type="boolean"),
+                            },
+                        ),
                         "harnesses": _schema(type="object", properties={"markllm": _schema(type="boolean")}),
                     },
                 )
@@ -403,14 +411,17 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "text":
                 if looks_binary(data):
                     raise ValueError("refusing to inspect bytes that look like a binary container as text")
-                report = inspect_text(data.decode("utf-8", errors="surrogateescape")).to_dict()
+                raw_text = data.decode("utf-8", errors="surrogateescape")
+                report = inspect_text(raw_text).to_dict()
+                s_rep = score_text_stylometry(raw_text, path=name or "<text>")
+                report["stylometry"] = s_rep.to_dict()
             elif kind == "image":
                 report = inspect_image(path).to_dict()
             else:
                 report = inspect_container(path).to_dict()
         suspicious = bool(report.get("suspicious_total")) or bool(
             report.get("has_c2pa") or report.get("has_ai_metadata")
-        )
+        ) or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
         self._respond(HTTPStatus.OK, {"ok": True, "kind": kind, "report": report, "suspicious": suspicious})
 
     def _handle_clean(self, data: bytes, name: str, body: dict[str, Any]) -> None:
