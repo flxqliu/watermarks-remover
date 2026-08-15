@@ -207,6 +207,11 @@ _ZW_FAMILY: frozenset[int] = frozenset(
 )
 
 
+def _is_private_use(cp: int) -> bool:
+    """BMP and supplementary private-use planes (Co: no portable meaning)."""
+    return 0xE000 <= cp <= 0xF8FF or 0xF0000 <= cp <= 0xFFFFD or 0x100000 <= cp <= 0x10FFFD
+
+
 def _is_strip_cp(cp: int) -> bool:
     if cp in STRIP_CODEPOINTS:
         return True
@@ -214,6 +219,8 @@ def _is_strip_cp(cp: int) -> bool:
         return True
     # Tag characters used in some stego schemes (U+E0001–U+E007F)
     if 0xE0001 <= cp <= 0xE007F:
+        return True
+    if _is_private_use(cp):
         return True
     return False
 
@@ -228,6 +235,8 @@ def _strip_kind(cp: int) -> str:
         return "bidi"
     if cp in _ZW_FAMILY:
         return "zwj_family"
+    if _is_private_use(cp):
+        return "private_use"
     return "strip"
 
 
@@ -262,11 +271,19 @@ def _is_emoji_base(cp: int) -> bool:
 # ZWNJ/ZWJ are orthographic inside complex scripts (Persian می‌روم, Devanagari
 # क्‍ष); flag emoji are an emoji base followed by tag chars (🏴󠁧󠁢󠁳󠁣󠁴󠁿); and a
 # handful of Cf codepoints are normal Arabic/Syriac orthography, not carriers.
+# So are Mongolian free variation selectors (choose a glyph of the preceding
+# letter), Khmer inherent vowels (invisible but phonemic), and Hangul fillers
+# (hold a jamo slot in a partial syllable). Each is only meaningful directly
+# after a base from its own script; isolated instances are contraband.
 _SCRIPT_JOINERS: frozenset[int] = frozenset({0x200C, 0x200D})
 _TAG_RANGE = range(0xE0020, 0xE0080)
 _ORTHOGRAPHIC_CF: frozenset[int] = frozenset(
     {0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605, 0x06DD, 0x070F, 0x08E2, 0x110BD, 0x110CD}
 )
+_MONGOLIAN_FVS: frozenset[int] = frozenset({0x180B, 0x180C, 0x180D})
+_KHMER_VOWELS: frozenset[int] = frozenset({0x17B4, 0x17B5})
+_HANGUL_FILLERS: frozenset[int] = frozenset({0x115F, 0x1160})
+_SCRIPT_GLUE: frozenset[int] = _MONGOLIAN_FVS | _KHMER_VOWELS | _HANGUL_FILLERS
 
 
 def _joining_script(cp: int) -> str | None:
@@ -336,13 +353,31 @@ def _valid_bidi_embedding_indices(text: str) -> set[int]:
     return valid
 
 
+def _is_mongolian_letter(cp: int) -> bool:
+    return 0x1800 <= cp <= 0x18AF and unicodedata.category(chr(cp))[0] == "L"
+
+
+def _is_khmer_letter(cp: int) -> bool:
+    return 0x1780 <= cp <= 0x17FF and unicodedata.category(chr(cp))[0] == "L"
+
+
+def _is_hangul_jamo(cp: int) -> bool:
+    return (
+        0x1100 <= cp <= 0x11FF
+        or 0xA960 <= cp <= 0xA97C  # Hangul Jamo Extended-A
+        or 0xD7B0 <= cp <= 0xD7C6  # Hangul Jamo Extended-B
+    )
+
+
 def _is_glue(cp: int) -> bool:
-    """Load-bearing invisible char: emoji glue, script joiner, or flag tag char."""
+    """Load-bearing invisible char: emoji glue, script joiner, flag tag char,
+    or same-script filler/selector (Mongolian FVS, Khmer vowel, Hangul filler)."""
     return (
         _is_emoji_glue(cp)
         or _is_variation_selector(cp)
         or cp in _SCRIPT_JOINERS
         or cp in _TAG_RANGE
+        or cp in _SCRIPT_GLUE
     )
 
 
@@ -397,6 +432,12 @@ def _decide(
                 return ("keep", ch, None)
         if cp in _TAG_RANGE and valid_flag_tag:
             return ("keep", ch, None)
+        if cp in _MONGOLIAN_FVS and prev_kept is not None and _is_mongolian_letter(ord(prev_kept)):
+            return ("keep", ch, None)
+        if cp in _KHMER_VOWELS and prev_kept is not None and _is_khmer_letter(ord(prev_kept)):
+            return ("keep", ch, None)
+        if cp in _HANGUL_FILLERS and prev_kept is not None and _is_hangul_jamo(ord(prev_kept)):
+            return ("keep", ch, None)
         if cp in _ORTHOGRAPHIC_CF:
             return ("keep", ch, None)
     if _is_strip_cp(cp):
@@ -428,7 +469,7 @@ class CharHit:
     char: str
     label: str
     count: int
-    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | space | confusable | other_cf
+    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | space | confusable | other_cf
     samples: list[int] = field(default_factory=list)  # character offsets
 
 
@@ -512,8 +553,8 @@ def inspect_text(
     notes = [
         "Layer A only: invisible/format Unicode and space homoglyphs (edit-based carriers).",
         "Statistical (token-sampling) watermarks are not detectable here; use Layer B rewrite.",
-        "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, space, confusable, other_cf.",
-        "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, flag tag chars, RTL directional marks/isolates, and orthographic Arabic/Syriac Cf marks. Inspection still reports bidi controls. Use explicit strip flags only after review.",
+        "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, private_use, space, confusable, other_cf.",
+        "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, complete flag tag sequences, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), RTL directional marks/paired embeddings, and orthographic Arabic/Syriac Cf marks. Inspection still reports bidi controls. Use explicit strip flags only after review.",
     ]
     if not hits:
         notes.append(
