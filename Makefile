@@ -3,7 +3,7 @@
 	smoke-markllm bootstrap-markllm docker-markllm-build docker-markllm-help \
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
-	install-skill clean
+	install-skill install-cursor-text-skill clean
 
 SCRIPTS := service/scripts
 PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
@@ -109,6 +109,9 @@ install-skill:
 	mkdir -p $(HOME)/.grok/skills
 	ln -sfn $(CURDIR)/skills/remove-ai-marks $(HOME)/.grok/skills/remove-ai-marks
 	@echo "linked -> $(HOME)/.grok/skills/remove-ai-marks"
+
+install-cursor-text-skill:
+	$(PYTHON) install_skill.py
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
