@@ -56,10 +56,10 @@ curl -s "$WM/capabilities"
 ```
 
 Reports which optional tools are available server-side (`c2patool`, `exiftool`,
-`qpdf`) and which heavy backends are configured (`pixel_backends.ctrlregen`,
-`pixel_backends.diffusion`, `scorers.synthid`, `harnesses.markllm`). **Drive
-your advice from this**: only recommend pixel removal / SynthID scoring when
-the service reports the backend present.
+`qpdf`), scorers present (`scorers.stylometry`, `scorers.synthid`), and which heavy
+backends are configured (`pixel_backends.ctrlregen`, `pixel_backends.diffusion`,
+`harnesses.markllm`). **Drive your advice from this**: only recommend pixel
+removal / SynthID scoring when the service reports the backend present.
 
 ## HTTP API (curl)
 
