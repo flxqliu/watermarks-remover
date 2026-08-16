@@ -74,3 +74,29 @@ def test_installer_force_creates_backup_and_replaces(tmp_path):
     assert len(backups) == 1
     assert (backups[0] / "old").read_text(encoding="utf-8") == "old"
     assert (destination / "SKILL.md").is_file()
+
+
+def test_lightweight_preserves_egyptian_format_controls():
+    # The vendored engine must match the service engine on visible-layout
+    # format controls: preserved next to their script, stripped when floating.
+    kept = "\U00013079\U00013430\U000130A7"
+    result = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "clean_text.py"), "-"],
+        input=kept,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.rstrip("\n") == kept
+
+    floating = "a\U00013430b"
+    result = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "clean_text.py"), "-"],
+        input=floating,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.rstrip("\n") == "ab"

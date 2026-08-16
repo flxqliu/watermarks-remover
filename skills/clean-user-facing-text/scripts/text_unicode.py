@@ -185,6 +185,26 @@ _BIDI_CPS: frozenset[int] = frozenset(
     }
 )
 
+# Visible-layout format controls: Egyptian hieroglyph quadrat controls,
+# Duployan shorthand overlap/step controls, and musical beam/tie/slur/phrase
+# controls are Cf but visibly govern how their script renders. Next to their
+# own script they are document body, not carriers; floating between unrelated
+# text they stay strip-class. Context ranges include each script's own block
+# (and the controls themselves) so control sequences survive intact.
+_LAYOUT_CF_CONTROLS: tuple[tuple[range, range], ...] = (
+    (range(0x13430, 0x13440), range(0x13000, 0x14400)),  # Egyptian hieroglyphs
+    (range(0x1BCA0, 0x1BCA4), range(0x1BC00, 0x1BCA4)),  # Duployan shorthand
+    (range(0x1D173, 0x1D17B), range(0x1D100, 0x1D200)),  # musical symbols
+)
+
+
+def _layout_cf_script(cp: int) -> range | None:
+    for controls, script in _LAYOUT_CF_CONTROLS:
+        if cp in controls:
+            return script
+    return None
+
+
 # Zero-width family (common edit-based carriers)
 _ZW_FAMILY: frozenset[int] = frozenset(
     {0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x180E}
@@ -303,6 +323,7 @@ def _is_glue(cp: int) -> bool:
 def _decide(
     ch: str,
     prev_kept: str | None,
+    next_input: str | None,
     *,
     normalize_spaces: bool,
     treat_confusables: bool,
@@ -330,6 +351,12 @@ def _decide(
         if cp in _HANGUL_FILLERS and prev_kept is not None and _is_hangul_jamo(ord(prev_kept)):
             return ("keep", ch, None)
         if cp in _ORTHOGRAPHIC_CF:
+            return ("keep", ch, None)
+        script = _layout_cf_script(cp)
+        if script is not None and (
+            (prev_kept is not None and ord(prev_kept) in script)
+            or (next_input is not None and ord(next_input) in script)
+        ):
             return ("keep", ch, None)
     if _is_strip_cp(cp):
         return ("strip", "", _strip_kind(cp))
@@ -402,6 +429,7 @@ def inspect_text(
         action, out_char, kind = _decide(
             ch,
             prev_kept,
+            text[i + 1] if i + 1 < len(text) else None,
             normalize_spaces=True,
             treat_confusables=aggressive,
             strip_emoji_glue=strip_emoji_glue,
@@ -438,7 +466,7 @@ def inspect_text(
         "Layer A only: invisible/format Unicode and space homoglyphs (edit-based carriers).",
         "Statistical (token-sampling) watermarks are not detectable here; use Layer B rewrite.",
         "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, private_use, space, confusable, other_cf.",
-        "Load-bearing invisibles are preserved by default: emoji glue (ZWJ/VS after an emoji base), script joiners (ZWNJ/ZWJ inside complex scripts), flag tag chars, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), and orthographic Arabic/Syriac Cf marks. Use --strip-emoji-glue for paranoid mode (strips them all).",
+        "Load-bearing invisibles are preserved by default: emoji glue (ZWJ/VS after an emoji base), script joiners (ZWNJ/ZWJ inside complex scripts), flag tag chars, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), orthographic Arabic/Syriac Cf marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat, Duployan shorthand, musical beaming). Use --strip-emoji-glue for paranoid mode (strips them all).",
     ]
     if not hits:
         notes.append(
@@ -462,10 +490,11 @@ def clean_text(
     out_chars: list[str] = []
     prev_kept: str | None = None
 
-    for ch in text:
+    for i, ch in enumerate(text):
         action, out_char, _kind = _decide(
             ch,
             prev_kept,
+            text[i + 1] if i + 1 < len(text) else None,
             normalize_spaces=normalize_spaces,
             treat_confusables=aggressive_homoglyphs,
             strip_emoji_glue=strip_emoji_glue,

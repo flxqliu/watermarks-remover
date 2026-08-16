@@ -303,3 +303,58 @@ def test_inspect_floating_script_glue_is_suspicious():
 def test_inspect_private_use():
     report = inspect_text("a\ue000b")
     assert any(h.kind == "private_use" for h in report.hits)
+
+
+def test_clean_preserves_egyptian_format_controls():
+    # Quadrat layout controls (joiners, insert/segment pairs) visibly govern
+    # how hieroglyphic text renders: body, not carriers, next to hieroglyphs.
+    for raw in (
+        "\U00013079\U00013430\U000130A7",  # glyph VERTICAL-JOINER glyph
+        "\U00013437\U00013079\U000130A7\U00013438",  # BEGIN/END SEGMENT pair
+    ):
+        cleaned, stats = clean_text(raw)
+        assert cleaned == raw
+        assert stats["removed_count"] == 0
+
+
+def test_clean_preserves_duployan_shorthand_controls():
+    # LETTER OVERLAP between two Duployan letters, UP STEP after one.
+    for raw in ("\U0001bc02\U0001bca0\U0001bc03", "\U0001bc02\U0001bca3"):
+        cleaned, stats = clean_text(raw)
+        assert cleaned == raw
+        assert stats["removed_count"] == 0
+
+
+def test_clean_preserves_musical_beam_controls():
+    # BEGIN/END BEAM around two stemmed notes.
+    raw = "\U0001d158\U0001d165\U0001d173\U0001d158\U0001d165\U0001d174"
+    cleaned, stats = clean_text(raw)
+    assert cleaned == raw
+    assert stats["removed_count"] == 0
+
+
+def test_clean_strips_floating_layout_format_controls():
+    # Between unrelated text the same controls stay strip-class carriers.
+    for cp in (0x13430, 0x13438, 0x1BCA0, 0x1BCA3, 0x1D173, 0x1D17A):
+        raw = "word" + chr(cp) + "word"
+        cleaned, stats = clean_text(raw)
+        assert cleaned == "wordword", f"U+{cp:04X} not stripped when floating"
+        assert stats["removed_count"] == 1
+
+
+def test_inspect_layout_controls_in_context_not_suspicious():
+    raw = "\U00013079\U00013430\U000130A7\U0001bc02\U0001bca0\U0001bc03"
+    report = inspect_text(raw)
+    assert report.suspicious_total == 0
+
+
+def test_inspect_floating_layout_controls_suspicious():
+    for cp in (0x13430, 0x1BCA0, 0x1D173):
+        report = inspect_text("a" + chr(cp) + "b")
+        assert report.suspicious_total >= 1
+
+
+def test_strip_emoji_glue_flag_strips_layout_controls():
+    # Paranoid mode keeps its blanket-strip semantics.
+    cleaned, _ = clean_text("\U00013079\U00013430\U000130A7", strip_emoji_glue=True)
+    assert "\U00013430" not in cleaned
