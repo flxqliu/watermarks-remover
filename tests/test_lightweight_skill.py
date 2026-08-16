@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -24,6 +25,42 @@ def test_lightweight_clean_text_cli():
     assert result.stdout.rstrip("\n") == "Hello world again"
     assert '"removed_count": 1' in result.stderr
     assert '"replaced_count": 1' in result.stderr
+
+
+def test_lightweight_clean_strips_reserved_default_ignorables():
+    # The vendored engine must match the service engine on the unassigned
+    # Default_Ignorable ranges (PropList.txt Other_Default_Ignorable_Code_Point).
+    cps = (
+        [0x2065, 0xE0000]
+        + list(range(0xFFF0, 0xFFF9))
+        + list(range(0xE0080, 0xE0100))
+        + list(range(0xE01F0, 0xE1000))
+    )
+    payload = "a" + "".join(map(chr, cps)) + "b"
+
+    cleaned = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "clean_text.py"), "-", "--stats"],
+        input=payload,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert cleaned.stdout.rstrip("\n") == "ab"
+    assert f'"removed_count": {len(cps)}' in cleaned.stderr
+
+    inspected = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "inspect_text.py"), "-", "--json"],
+        input=payload,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+    assert inspected.returncode == 1  # suspicious input exits 1 by design
+    report = json.loads(inspected.stdout)
+    kinds = {hit["kind"] for hit in report["hits"]}
+    assert kinds == {"reserved_ignorable"}
 
 
 def test_lightweight_skill_has_no_template_placeholders():

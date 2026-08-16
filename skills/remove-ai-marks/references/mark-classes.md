@@ -11,6 +11,7 @@ Invisible or near-invisible characters, exotic spaces, bidi controls, tag charac
 | `tag_chars` | U+E0001–U+E007F |
 | `variation_selector` | VS1–VS256 |
 | `private_use` | U+E000–F8FF, U+F0000–FFFFD, U+100000–10FFFD |
+| `reserved_ignorable` | U+2065, U+FFF0–FFF8, U+E0000, U+E0080–E00FF, U+E01F0–E0FFF (unassigned Default_Ignorable) |
 | `space` | NBSP, em space, ideographic space |
 | `confusable` | Cyrillic/fullwidth Latin (aggressive) |
 
