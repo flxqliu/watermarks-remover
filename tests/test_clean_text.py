@@ -371,3 +371,46 @@ def test_inspect_floating_script_glue_is_suspicious():
 def test_inspect_private_use():
     report = inspect_text("a\ue000b")
     assert any(h.kind == "private_use" for h in report.hits)
+
+
+# The 66 Unicode noncharacters: U+FDD0..U+FDEF plus U+nFFFE/U+nFFFF at the
+# end of every plane. Permanently reserved for internal use and prohibited in
+# interchange (TUS 23.7), rendered as nothing or tofu, preserved by
+# normalisation: covert carriers with no future-assignment risk at all.
+# Transcribed independently of the implementation table.
+NONCHARACTER_CPS = list(range(0xFDD0, 0xFDF0)) + [
+    plane << 16 | low for plane in range(0x11) for low in (0xFFFE, 0xFFFF)
+]
+
+
+def test_noncharacter_list_is_complete():
+    assert len(NONCHARACTER_CPS) == 66
+
+
+def test_clean_strips_noncharacters():
+    for cp in NONCHARACTER_CPS:
+        raw = "word" + chr(cp) + "word"
+        cleaned, stats = clean_text(raw)
+        assert cleaned == "wordword", f"U+{cp:04X} not stripped"
+        assert stats["removed_count"] == 1
+
+
+def test_inspect_reports_noncharacter_kind():
+    for cp in NONCHARACTER_CPS:
+        report = inspect_text("word" + chr(cp) + "word")
+        assert any(h.kind == "noncharacter" for h in report.hits), (
+            f"U+{cp:04X} not reported as noncharacter"
+        )
+
+
+def test_noncharacter_does_not_claim_assigned_neighbours():
+    # U+FDF0 (Arabic ligature) and U+FFFD (replacement character) sit right
+    # next to noncharacter ranges and must stay untouched and unclaimed.
+    for cp in (0xFDF0, 0xFFFD):
+        raw = "word" + chr(cp) + "word"
+        cleaned, _ = clean_text(raw)
+        assert cleaned == raw, f"U+{cp:04X} wrongly altered"
+        report = inspect_text(raw)
+        assert not any(h.kind == "noncharacter" for h in report.hits), (
+            f"U+{cp:04X} wrongly reported as noncharacter"
+        )

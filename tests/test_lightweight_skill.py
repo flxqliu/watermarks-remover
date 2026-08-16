@@ -27,15 +27,7 @@ def test_lightweight_clean_text_cli():
     assert '"replaced_count": 1' in result.stderr
 
 
-def test_lightweight_clean_strips_reserved_default_ignorables():
-    # The vendored engine must match the service engine on the unassigned
-    # Default_Ignorable ranges (PropList.txt Other_Default_Ignorable_Code_Point).
-    cps = (
-        [0x2065, 0xE0000]
-        + list(range(0xFFF0, 0xFFF9))
-        + list(range(0xE0080, 0xE0100))
-        + list(range(0xE01F0, 0xE1000))
-    )
+def _run_vendored_clean_and_inspect(cps):
     payload = "a" + "".join(map(chr, cps)) + "b"
 
     cleaned = subprocess.run(
@@ -59,8 +51,28 @@ def test_lightweight_clean_strips_reserved_default_ignorables():
     )
     assert inspected.returncode == 1  # suspicious input exits 1 by design
     report = json.loads(inspected.stdout)
-    kinds = {hit["kind"] for hit in report["hits"]}
-    assert kinds == {"reserved_ignorable"}
+    return {hit["kind"] for hit in report["hits"]}
+
+
+def test_lightweight_clean_strips_reserved_default_ignorables():
+    # The vendored engine must match the service engine on the unassigned
+    # Default_Ignorable ranges (PropList.txt Other_Default_Ignorable_Code_Point).
+    cps = (
+        [0x2065, 0xE0000]
+        + list(range(0xFFF0, 0xFFF9))
+        + list(range(0xE0080, 0xE0100))
+        + list(range(0xE01F0, 0xE1000))
+    )
+    assert _run_vendored_clean_and_inspect(cps) == {"reserved_ignorable"}
+
+
+def test_lightweight_clean_strips_noncharacters():
+    # The vendored engine must match the service engine on the 66 Unicode
+    # noncharacters (U+FDD0..U+FDEF plus U+nFFFE/U+nFFFF in every plane).
+    cps = list(range(0xFDD0, 0xFDF0)) + [
+        plane << 16 | low for plane in range(0x11) for low in (0xFFFE, 0xFFFF)
+    ]
+    assert _run_vendored_clean_and_inspect(cps) == {"noncharacter"}
 
 
 def test_lightweight_skill_has_no_template_placeholders():
