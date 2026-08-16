@@ -655,6 +655,10 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 [MetaClean](https://github.com/Moresyl/metaclean) is an independent MIT-licensed Rust/Tauri desktop application (Windows, macOS, Linux) providing a packaged native GUI for drag-and-drop metadata cleaning, with a system tray and Explorer integration. It is a separate codebase: it does not call this repository's Python service, and its supported formats and cleaning guarantees differ from this project's. See its README for details.
 
+### watermarks-remover-web — browser web UI
+
+[watermarks-remover-web](https://github.com/ivanusto/watermarks-remover-web) is an independent MIT-licensed, static browser client. It ports this repository's `text_unicode.py` and `image_meta.py` to JavaScript so text and PNG/JPEG/WebP metadata cleaning run entirely in the browser, and can optionally drive this repository's HTTP service through a bundled same-origin proxy (`serve_local.py`) for the remaining formats. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
+
 ### Adding a project
 
 To register a project here, open a PR adding a short entry — project name, what it wraps or adds, and a link to its own repository. Keep entries brief and factual; do not claim compatibility with, or endorsement by, this project.
