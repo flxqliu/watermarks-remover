@@ -278,6 +278,46 @@ def test_inspect_flags_missed_default_ignorable_carriers():
         assert report.suspicious_total >= 1
 
 
+# Unassigned code points carrying Other_Default_Ignorable_Code_Point=Yes:
+# reserved for future default-ignorables, so conformant renderers display
+# them invisibly, and normalisation preserves them. Perfect covert carriers.
+# Ranges transcribed from Unicode PropList.txt independently of the
+# implementation table, so a typo in either shows up as a mismatch.
+RESERVED_IGNORABLE_CPS = (
+    [0x2065, 0xE0000]
+    + list(range(0xFFF0, 0xFFF9))
+    + list(range(0xE0080, 0xE0100))
+    + list(range(0xE01F0, 0xE1000))
+)
+
+
+def test_clean_strips_reserved_default_ignorables():
+    for cp in RESERVED_IGNORABLE_CPS:
+        raw = "word" + chr(cp) + "word"
+        cleaned, stats = clean_text(raw)
+        assert cleaned == "wordword", f"U+{cp:04X} not stripped"
+        assert stats["removed_count"] == 1
+
+
+def test_inspect_reports_reserved_ignorable_kind():
+    for cp in RESERVED_IGNORABLE_CPS:
+        report = inspect_text("word" + chr(cp) + "word")
+        assert any(h.kind == "reserved_ignorable" for h in report.hits), (
+            f"U+{cp:04X} not reported as reserved_ignorable"
+        )
+
+
+def test_reserved_ignorable_does_not_claim_assigned_neighbours():
+    # Boundary check: U+2064 (invisible plus, Cf) and U+FFF9 (interlinear
+    # annotation anchor) are assigned and already handled under other kinds;
+    # U+E0001 is a tag character. None of them may report reserved_ignorable.
+    for cp in (0x2064, 0xFFF9, 0xE0001, 0xE0100):
+        report = inspect_text("word" + chr(cp) + "word")
+        assert not any(h.kind == "reserved_ignorable" for h in report.hits), (
+            f"U+{cp:04X} wrongly reported as reserved_ignorable"
+        )
+
+
 def test_clean_preserves_khmer_inherent_vowels():
     # Invisible but phonemic inherent vowels after a Khmer consonant.
     for raw in ("\u1780\u17b4\u1781", "\u1780\u17b5\u1781"):

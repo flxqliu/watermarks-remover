@@ -170,6 +170,28 @@ LATIN_CONFUSABLES: dict[int, str] = {
 # Variation selectors beyond FE0x (VS17-VS256 in Supplementary Special-purpose)
 _VS_SUPPLEMENT = range(0xE0100, 0xE01F0)
 
+# Unassigned code points with Other_Default_Ignorable_Code_Point=Yes: reserved
+# for future default-ignorable characters, so conformant renderers display them
+# invisibly today and normalisation preserves them. They have no legitimate use
+# in interchange text (conformance clause C7), which makes them ideal covert
+# carriers. Kept as explicit ranges, never a category-Cn rule: unicodedata is
+# pinned per Python build, so a Cn rule would destroy freshly assigned real
+# characters. Re-check these ranges on Unicode version bumps: assignment turns
+# a strip entry into a potential preserve-in-context case, exactly as happened
+# when U+180F became Mongolian FVS4 in Unicode 14.
+_RESERVED_IGNORABLE_CPS: frozenset[int] = frozenset({0x2065, 0xE0000})
+_RESERVED_IGNORABLE_RANGES: tuple[range, ...] = (
+    range(0xFFF0, 0xFFF9),
+    range(0xE0080, 0xE0100),
+    range(0xE01F0, 0xE1000),
+)
+
+
+def _is_reserved_ignorable(cp: int) -> bool:
+    if cp in _RESERVED_IGNORABLE_CPS:
+        return True
+    return any(cp in r for r in _RESERVED_IGNORABLE_RANGES)
+
 
 # Bidi / directional format controls (subset of strip set, finer inspect labels)
 _BIDI_CPS: frozenset[int] = frozenset(
@@ -223,6 +245,8 @@ def _is_strip_cp(cp: int) -> bool:
     # Tag characters used in some stego schemes (U+E0001-U+E007F)
     if 0xE0001 <= cp <= 0xE007F:
         return True
+    if _is_reserved_ignorable(cp):
+        return True
     return bool(_is_private_use(cp))
 
 
@@ -230,6 +254,8 @@ def _strip_kind(cp: int) -> str:
     """Finer-grained inspect kind for strip-class codepoints."""
     if 0xE0001 <= cp <= 0xE007F:
         return "tag_chars"
+    if _is_reserved_ignorable(cp):
+        return "reserved_ignorable"
     if cp in _VS_SUPPLEMENT or 0xFE00 <= cp <= 0xFE0F or cp in _MONGOLIAN_FVS:
         return "variation_selector"
     if cp in _BIDI_CPS:
@@ -469,7 +495,7 @@ class CharHit:
     char: str
     label: str
     count: int
-    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | space | confusable | other_cf
+    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | reserved_ignorable | space | confusable | other_cf
     samples: list[int] = field(default_factory=list)  # character offsets
 
 
