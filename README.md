@@ -657,7 +657,7 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 ### watermarks-remover-web — browser web UI
 
-[watermarks-remover-web](https://github.com/ivanusto/watermarks-remover-web) is an independent MIT-licensed, static browser client. It ports this repository's `text_unicode.py` and `image_meta.py` to JavaScript so text and PNG/JPEG/WebP metadata cleaning run entirely in the browser, and can optionally drive this repository's HTTP service through a bundled same-origin proxy (`serve_local.py`) for the remaining formats. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
+[watermarks-remover-web](https://github.com/ivanusto/watermarks-remover-web) is an independent MIT-licensed, static browser client. It ports this repository's `text_unicode.py` and `image_meta.py` to JavaScript so text and PNG/JPEG/WebP/AVIF/HEIC metadata cleaning run entirely in the browser, and can optionally drive this repository's HTTP service through a bundled same-origin proxy (`serve_local.py`) for the remaining formats. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
 
 ### Adding a project
 
