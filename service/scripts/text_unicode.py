@@ -168,6 +168,15 @@ LATIN_CONFUSABLES: dict[int, str] = {
 _VS_SUPPLEMENT = range(0xE0100, 0xE01F0)
 
 
+# The 66 Unicode noncharacters: U+FDD0..U+FDEF plus U+nFFFE/U+nFFFF at the
+# end of every plane. Permanently reserved for internal use and prohibited in
+# interchange text (TUS 23.7), so any occurrence in interchange is contraband.
+# Rendered as nothing or tofu, preserved by normalisation, and permanently
+# unassignable, so stripping them carries no future-Unicode risk.
+def _is_noncharacter(cp: int) -> bool:
+    return 0xFDD0 <= cp <= 0xFDEF or (cp & 0xFFFE) == 0xFFFE
+
+
 # Bidi / directional format controls (subset of strip set, finer inspect labels)
 _BIDI_CPS: frozenset[int] = frozenset(
     {
@@ -220,6 +229,8 @@ def _is_strip_cp(cp: int) -> bool:
     # Tag characters used in some stego schemes (U+E0001–U+E007F)
     if 0xE0001 <= cp <= 0xE007F:
         return True
+    if _is_noncharacter(cp):
+        return True
     if _is_private_use(cp):
         return True
     return False
@@ -229,6 +240,8 @@ def _strip_kind(cp: int) -> str:
     """Finer-grained inspect kind for strip-class codepoints."""
     if 0xE0001 <= cp <= 0xE007F:
         return "tag_chars"
+    if _is_noncharacter(cp):
+        return "noncharacter"
     if cp in _VS_SUPPLEMENT or 0xFE00 <= cp <= 0xFE0F or 0x180B <= cp <= 0x180D:
         return "variation_selector"
     if cp in _BIDI_CPS:
@@ -469,7 +482,7 @@ class CharHit:
     char: str
     label: str
     count: int
-    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | space | confusable | other_cf
+    kind: str  # strip | bidi | tag_chars | variation_selector | zwj_family | private_use | noncharacter | space | confusable | other_cf
     samples: list[int] = field(default_factory=list)  # character offsets
 
 

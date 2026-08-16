@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -24,6 +25,39 @@ def test_lightweight_clean_text_cli():
     assert result.stdout.rstrip("\n") == "Hello world again"
     assert '"removed_count": 1' in result.stderr
     assert '"replaced_count": 1' in result.stderr
+
+
+def test_lightweight_clean_strips_noncharacters():
+    # The vendored engine must match the service engine on the 66 Unicode
+    # noncharacters (U+FDD0..U+FDEF plus U+nFFFE/U+nFFFF in every plane).
+    cps = list(range(0xFDD0, 0xFDF0)) + [
+        plane << 16 | low for plane in range(0x11) for low in (0xFFFE, 0xFFFF)
+    ]
+    payload = "a" + "".join(map(chr, cps)) + "b"
+
+    cleaned = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "clean_text.py"), "-", "--stats"],
+        input=payload,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert cleaned.stdout.rstrip("\n") == "ab"
+    assert f'"removed_count": {len(cps)}' in cleaned.stderr
+
+    inspected = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "inspect_text.py"), "-", "--json"],
+        input=payload,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+    assert inspected.returncode == 1  # suspicious input exits 1 by design
+    report = json.loads(inspected.stdout)
+    kinds = {hit["kind"] for hit in report["hits"]}
+    assert kinds == {"noncharacter"}
 
 
 def test_lightweight_skill_has_no_template_placeholders():
