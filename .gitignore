@@ -8,8 +8,17 @@
 !/docs/**
 !/service/
 !/service/**
+# git never descends into an excluded directory, so /skills/ itself must be
+# re-included before per-skill rules can match anything beneath it.
+!/skills/
+/skills/*
+!/skills/clean-user-facing-text/
+!/skills/clean-user-facing-text/**
 !/skills/remove-ai-marks/
 !/skills/remove-ai-marks/**
+!/skills/remove-ai-marks-desktop/
+!/skills/remove-ai-marks-desktop/**
+!/package_desktop_skill.py
 !/tests/
 !/tests/**
 !/.dockerignore

@@ -45,6 +45,27 @@ ln -sfn "$(pwd)/skills/remove-ai-marks" ~/.grok/skills/remove-ai-marks
 
 Invoke with `/remove-ai-marks` or ask to “strip AI watermarks / C2PA / Claude marks / SynthID-class text.”
 
+### Claude Desktop (sandboxed) skill
+
+Claude Desktop runs skills inside a sandboxed VM that cannot reach servers on
+the host, so the HTTP-client skill above does not work there. Package the
+self-contained variant instead:
+
+```bash
+make desktop-skill        # or: python3 package_desktop_skill.py
+```
+
+This writes `dist/remove-ai-marks-desktop.zip` with the full stdlib cleaning
+engine copied fresh from `service/scripts/` (single source of truth, nothing
+vendored) plus a Desktop-specific `SKILL.md`
+([`skills/remove-ai-marks-desktop/`](skills/remove-ai-marks-desktop/)) that
+drives the CLIs directly. Import the zip in Claude Desktop under Settings >
+Capabilities > Skills.
+
+In-sandbox degradations are documented in the skill itself: PDF strips are
+best-effort without `exiftool`/`qpdf`, and the heavy pixel/scoring backends are
+unavailable.
+
 ### Optional Cursor text-only skill
 
 [`skills/clean-user-facing-text/`](skills/clean-user-facing-text/) is a
@@ -671,6 +692,7 @@ make smoke                          # quick CLI smoke on fixtures
 
 ### Unreleased
 
+- **Self-contained skill bundle for Claude Desktop**: Desktop runs skills in a sandboxed VM with no route to a host-side service, so the HTTP-client skill could never reach `127.0.0.1:8765` there. New `package_desktop_skill.py` (and `make desktop-skill`) assembles `dist/remove-ai-marks-desktop.zip`: a Desktop-specific `SKILL.md` (`skills/remove-ai-marks-desktop/`) that drives the unified CLIs directly, the shared references, and the stdlib engine scripts copied fresh from `service/scripts/` at build time, so there are no vendored duplicates to drift. Bundled scope: text Layer A, image/container metadata, directory audits, and Layer B via the offline `print-prompt` backend; the skill states the sandbox degradations (best-effort PDF without `exiftool`/`qpdf`, no pixel/scoring backends) up front
 - **Fix `inspect` missing Layer A carriers in markdown/HTML**: `inspect_container` never scanned the document body, so a `.md` or `.html` file holding invisible Unicode came back `suspicious: false` while `clean_container` went on to strip it — the same bytes saved as `.txt` were correctly flagged. The scan now runs for exactly the formats `clean_container` scrubs, so inspect predicts clean. Container reports gain `suspicious_total` (the same key `TextInspectReport` uses, so the HTTP `suspicious` flag and the `inspect_file` exit code pick it up) and `layer_a_hits`
 
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
