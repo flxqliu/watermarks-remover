@@ -4,18 +4,38 @@ Formats: SVG, PDF (best-effort), DOCX, ODT, HTML, Markdown frontmatter.
 Stdlib-first; PDF prefers optional exiftool/c2patool when present.
 """
 
-from __future__ import annotations
-
+import base64
 import io
 import posixpath
 import re
 import subprocess
+import urllib.parse
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from common import classify_finding_confidence, safe_arg, safe_write_bytes, safe_write_text, subprocess_preexec_fn, which
-from image_meta import AI_META_HINTS, C2PA_MARKERS, run_optional_tools
+from common import (
+    classify_finding_confidence,
+    safe_arg,
+    safe_write_bytes,
+    safe_write_text,
+    subprocess_preexec_fn,
+    which,
+)
+from image_meta import (
+    AI_META_HINTS,
+    C2PA_MARKERS,
+    detect_format as detect_image_format,
+    inspect_isobmff,
+    inspect_jpeg,
+    inspect_png,
+    inspect_webp,
+    run_optional_tools,
+    strip_isobmff,
+    strip_jpeg,
+    strip_png,
+    strip_webp,
+)
 
 # Frontmatter / meta keys that often carry AI provenance
 AI_FRONTMATTER_KEYS = frozenset(
@@ -146,6 +166,133 @@ def _blob_hits(blob: bytes) -> tuple[bool, bool, list[str]]:
     return has_c2pa, has_ai or has_c2pa, findings[:30]
 
 
+RE_DATA_IMAGE_URI = re.compile(
+    r"data:image\/(?P<mime>[a-zA-Z0-9\+\-\.]+)(?P<params>;[^\s\"'\)<>]+)?,(?P<payload>[A-Za-z0-9+/=\s%]+)",
+    re.I,
+)
+
+
+def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
+    has_c2pa = False
+    has_ai = False
+    findings: list[str] = []
+
+    for m in RE_DATA_IMAGE_URI.finditer(text):
+        mime = m.group("mime").lower()
+        params = (m.group("params") or "").lower()
+        payload = m.group("payload")
+        is_b64 = "base64" in params
+
+        try:
+            if is_b64:
+                raw_b64 = re.sub(r"\s+", "", payload)
+                pad = len(raw_b64) % 4
+                if pad:
+                    raw_b64 += "=" * (4 - pad)
+                data = base64.b64decode(raw_b64)
+            else:
+                data = urllib.parse.unquote_to_bytes(payload)
+        except Exception:
+            continue
+
+        if not data:
+            continue
+
+        fmt = detect_image_format(data)
+        if fmt == "png":
+            sub_c2pa, sub_ai, sub_findings = inspect_png(data)
+        elif fmt == "jpeg":
+            sub_c2pa, sub_ai, sub_findings = inspect_jpeg(data)
+        elif fmt == "webp":
+            sub_c2pa, sub_ai, sub_findings = inspect_webp(data)
+        elif fmt in ("avif", "heic"):
+            sub_c2pa, sub_ai, sub_findings = inspect_isobmff(data, fmt)
+        elif "svg" in mime or data.lstrip().startswith(b"<"):
+            sub_c2pa, sub_ai, sub_findings, _ = inspect_svg(data)
+        else:
+            sub_c2pa, sub_ai, sub_findings = _blob_hits(data)
+
+        if sub_c2pa:
+            has_c2pa = True
+        if sub_ai or sub_c2pa:
+            has_ai = True
+        for f in sub_findings:
+            findings.append(f"embedded data:image/{mime}: {f}")
+
+    return has_c2pa, has_ai, findings
+
+
+def _clean_embedded_data_uris(
+    text: str, *, strip_all_metadata: bool = True
+) -> tuple[str, list[str]]:
+    actions: list[str] = []
+
+    def _replace_uri(m: re.Match[str]) -> str:
+        full_match = m.group(0)
+        mime = m.group("mime")
+        params = m.group("params") or ""
+        payload = m.group("payload")
+        is_b64 = "base64" in params.lower()
+
+        try:
+            if is_b64:
+                raw_b64 = re.sub(r"\s+", "", payload)
+                pad = len(raw_b64) % 4
+                if pad:
+                    raw_b64 += "=" * (4 - pad)
+                data = base64.b64decode(raw_b64)
+            else:
+                data = urllib.parse.unquote_to_bytes(payload)
+        except Exception:
+            return full_match
+
+        if not data:
+            return full_match
+
+        fmt = detect_image_format(data)
+        sub_actions: list[str] = []
+        cleaned_bytes = data
+
+        try:
+            if fmt == "png":
+                cleaned_bytes, sub_actions = strip_png(
+                    data, strip_all_text=strip_all_metadata
+                )
+            elif fmt == "jpeg":
+                cleaned_bytes, sub_actions = strip_jpeg(
+                    data, strip_all_app=strip_all_metadata
+                )
+            elif fmt == "webp":
+                cleaned_bytes, sub_actions = strip_webp(
+                    data, strip_all_metadata=strip_all_metadata
+                )
+            elif fmt in ("avif", "heic"):
+                cleaned_bytes, sub_actions = strip_isobmff(
+                    data, fmt, strip_all_metadata=strip_all_metadata
+                )
+            elif "svg" in mime.lower() or data.lstrip().startswith(b"<"):
+                cleaned_bytes, sub_actions = clean_svg(data)
+        except Exception:
+            return full_match
+
+        if not any("drop" in a.lower() for a in sub_actions) or cleaned_bytes == data:
+            return full_match
+
+        actions.append(
+            f"cleaned embedded data:image/{mime} ({', '.join(sub_actions[:2])})"
+        )
+
+        if is_b64:
+            new_b64 = base64.b64encode(cleaned_bytes).decode("ascii")
+            return f"data:image/{mime}{params},{new_b64}"
+        else:
+            new_payload = urllib.parse.quote_from_bytes(cleaned_bytes)
+            return f"data:image/{mime}{params},{new_payload}"
+
+    out = RE_DATA_IMAGE_URI.sub(_replace_uri, text)
+    return out, actions
+
+
 # ---------------------------------------------------------------------------
 # Markdown frontmatter
 # ---------------------------------------------------------------------------
@@ -170,76 +317,91 @@ def _parse_simple_yaml_keys(block: str) -> list[tuple[str, str, int]]:
 def inspect_markdown(text: str) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_ai = False
-    m = _FM_RE.match(text)
-    if not m:
-        return False, False, [], {"has_frontmatter": False}
-    block = m.group(1)
+    has_fm = False
     keys = []
-    for key, _line, _i in _parse_simple_yaml_keys(block):
-        keys.append(key)
-        if key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
-            has_ai = True
-            findings.append(f"frontmatter key: {key}")
-        # also check value
-        val = _line.split(":", 1)[1] if ":" in _line else ""
-        if AI_META_NAME_RE.search(val):
-            has_ai = True
-            findings.append(f"frontmatter value hit on {key}")
-    c2pa = any("c2pa" in f.lower() or "content" in f.lower() for f in findings)
-    return c2pa, has_ai, findings, {"has_frontmatter": True, "keys": keys}
+    m = _FM_RE.match(text)
+    if m:
+        has_fm = True
+        block = m.group(1)
+        for key, _line, _i in _parse_simple_yaml_keys(block):
+            keys.append(key)
+            if key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
+                has_ai = True
+                findings.append(f"frontmatter key: {key}")
+            # also check value
+            val = _line.split(":", 1)[1] if ":" in _line else ""
+            if AI_META_NAME_RE.search(val):
+                has_ai = True
+                findings.append(f"frontmatter value hit on {key}")
+
+    uri_c2pa, uri_ai, uri_findings = _inspect_embedded_data_uris(text)
+    if uri_c2pa:
+        has_ai = True
+    if uri_ai:
+        has_ai = True
+    findings.extend(uri_findings)
+
+    c2pa = uri_c2pa or any("c2pa" in f.lower() or "content" in f.lower() for f in findings)
+    return c2pa, has_ai, findings, {"has_frontmatter": has_fm, "keys": keys}
 
 
 def clean_markdown(text: str) -> tuple[str, list[str]]:
     actions: list[str] = []
     m = _FM_RE.match(text)
-    if not m:
-        return text, ["no YAML frontmatter"]
-    block = m.group(1)
-    body = text[m.end() :]
-    kept: list[str] = []
-    dropping = False  # inside the nested block of a dropped top-level key
-    for line in block.splitlines():
-        stripped = line.strip()
+    if m:
+        block = m.group(1)
+        body = text[m.end() :]
+        kept: list[str] = []
+        dropping = False  # inside the nested block of a dropped top-level key
+        for line in block.splitlines():
+            stripped = line.strip()
 
-        # Blank lines and comments belong to whichever block we are inside.
-        if not stripped or stripped.startswith("#"):
-            if not dropping:
+            # Blank lines and comments belong to whichever block we are inside.
+            if not stripped or stripped.startswith("#"):
+                if not dropping:
+                    kept.append(line)
+                continue
+
+            # Continuation lines (nested mappings, list items) follow their parent.
+            if line[0] in (" ", "\t", "-"):
+                if not dropping:
+                    kept.append(line)
+                continue
+
+            km = re.match(r"^([A-Za-z0-9_.-]+)\s*:", line)
+            if not km:
+                dropping = False
                 kept.append(line)
-            continue
+                continue
 
-        # Continuation lines (nested mappings, list items) follow their parent.
-        if line[0] in (" ", "\t", "-"):
-            if not dropping:
-                kept.append(line)
-            continue
+            key = km.group(1)
+            val = line.split(":", 1)[1] if ":" in line else ""
+            if key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
+                actions.append(f"drop frontmatter key: {key}")
+                dropping = True
+                continue
+            if AI_META_NAME_RE.search(val):
+                actions.append(f"drop frontmatter key (value hit): {key}")
+                dropping = True
+                continue
 
-        km = re.match(r"^([A-Za-z0-9_.-]+)\s*:", line)
-        if not km:
             dropping = False
             kept.append(line)
-            continue
-
-        key = km.group(1)
-        val = line.split(":", 1)[1] if ":" in line else ""
-        if key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
-            actions.append(f"drop frontmatter key: {key}")
-            dropping = True
-            continue
-        if AI_META_NAME_RE.search(val):
-            actions.append(f"drop frontmatter key (value hit): {key}")
-            dropping = True
-            continue
-
-        dropping = False
-        kept.append(line)
-    if not actions:
-        actions.append("no AI frontmatter keys removed")
-    new_block = "\n".join(kept).strip("\n")
-    if new_block:
-        out = f"---\n{new_block}\n---\n{body}"
+        new_block = "\n".join(kept).strip("\n")
+        if new_block:
+            out = f"---\n{new_block}\n---\n{body}"
+        else:
+            out = body.lstrip("\n")
+            actions.append("removed empty frontmatter block")
     else:
-        out = body.lstrip("\n")
-        actions.append("removed empty frontmatter block")
+        out = text
+
+    out, uri_actions = _clean_embedded_data_uris(out)
+    if uri_actions:
+        actions.extend(uri_actions)
+
+    if not actions:
+        actions.append("no AI frontmatter keys or embedded data URIs removed")
     return out, actions
 
 
@@ -313,6 +475,14 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
     for m in re.finditer(r"\bdata-ai[\w-]*\s*=\s*[\"'][^\"']*[\"']", text, re.I):
         has_ai = True
         findings.append(f"attr: {m.group(0)[:80]}")
+
+    uri_c2pa, uri_ai, uri_findings = _inspect_embedded_data_uris(text)
+    if uri_c2pa:
+        has_c2pa = True
+    if uri_ai:
+        has_ai = True
+    findings.extend(uri_findings)
+
     return has_c2pa, has_ai, findings, {}
 
 
@@ -346,6 +516,11 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     if n:
         actions.append(f"drop data-ai* attributes x{n}")
         out = out2
+
+    out, uri_actions = _clean_embedded_data_uris(out)
+    if uri_actions:
+        actions.extend(uri_actions)
+
     if not actions:
         actions.append("no HTML AI meta removed")
     return out, actions
@@ -369,6 +544,13 @@ def inspect_svg(data: bytes) -> tuple[bool, bool, list[str], dict]:
             findings.append("XMP/RDF-like content in SVG")
         if re.search(r"c2pa|jumbf", text, re.I):
             has_c2pa = True
+
+        uri_c2pa, uri_ai, uri_findings = _inspect_embedded_data_uris(text)
+        if uri_c2pa:
+            has_c2pa = True
+        if uri_ai:
+            has_ai = True
+        findings.extend(uri_findings)
     except Exception as e:
         findings.append(f"svg decode note: {e}")
     return has_c2pa, has_ai or has_c2pa, findings, {}
@@ -406,6 +588,12 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
         return body
 
     text = re.sub(r"<!--.*?-->", _cmt, text, flags=re.DOTALL)
+
+    # Clean embedded data URIs
+    text, uri_actions = _clean_embedded_data_uris(text)
+    if uri_actions:
+        actions.extend(uri_actions)
+
     if not actions:
         # still strip generator attribute on root if present
         new, n = re.subn(
