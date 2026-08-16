@@ -34,6 +34,15 @@ Service path: [`service/`](service/)
 The skill ships **no code** — it calls the service over HTTP. Install the skill (markdown only) and start the service, then set `WATERMARKS_SERVICE_URL` if it is not `http://127.0.0.1:8765`.
 
 ```bash
+# Codex (~/.codex/skills/remove-ai-marks)
+python3 install_skill.py --target codex --skill remove-ai-marks
+
+# Claude (~/.claude/skills/remove-ai-marks)
+python3 install_skill.py --target claude --skill remove-ai-marks
+
+# Codex + Claude + Cursor
+python3 install_skill.py --target all --skill remove-ai-marks
+
 # Grok Build / project-local
 mkdir -p .grok/skills
 ln -sfn "$(pwd)/skills/remove-ai-marks" .grok/skills/remove-ai-marks
@@ -42,6 +51,10 @@ ln -sfn "$(pwd)/skills/remove-ai-marks" .grok/skills/remove-ai-marks
 mkdir -p ~/.grok/skills
 ln -sfn "$(pwd)/skills/remove-ai-marks" ~/.grok/skills/remove-ai-marks
 ```
+
+The installer respects `CODEX_HOME`, `CLAUDE_HOME`, and `CURSOR_HOME`.
+Existing installations are preserved unless `--force` is passed; replacements
+are staged first and the previous installs are kept as uniquely named backups.
 
 Invoke with `/remove-ai-marks` or ask to “strip AI watermarks / C2PA / Claude marks / SynthID-class text.”
 
@@ -58,9 +71,7 @@ python3 install_skill.py
 ```
 
 On Windows, use `py install_skill.py`. The `install-skill.sh` wrapper is
-provided for macOS/Linux shells. Existing installations are preserved unless
-you pass `--force`; replacement is staged first and the previous install is
-kept as a uniquely named backup.
+provided for macOS/Linux shells.
 
 Skill invocation is model-selected. Projects that explicitly adopt this
 workflow can also copy the optional rule:
@@ -160,7 +171,7 @@ WM="http://127.0.0.1:8765"
 curl -s "$WM/health"                       # {"ok": true, "version": "..."}
 curl -s "$WM/openapi.json"                 # machine-readable OpenAPI 3.0.3 contract
 curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 notes.md)\", \"name\": \"notes.md\"}"
+  -d "{\"file\": \"$(base64 < notes.md | tr -d '\r\n')\", \"name\": \"notes.md\"}"
 ```
 
 The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request. Loopback-only bind by default (`--host` to override); intended for a trusted network.
@@ -213,7 +224,7 @@ Checks `wr-core` via `GET /health` and runs each harness/heavy service with `--h
 ```bash
 echo "Hello\u200bWorld\u00ad!" > /tmp/sample.txt
 curl -s -X POST http://127.0.0.1:8765/clean -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 /tmp/sample.txt)\", \"name\": \"sample.txt\"}"
+  -d "{\"file\": \"$(base64 < /tmp/sample.txt | tr -d '\r\n')\", \"name\": \"sample.txt\"}"
 ```
 
 Everything else is optional and lives in a `.env` file at the repo root. `docker compose` **auto-loads `.env`** and interpolates the `${VAR}` references in `compose.yaml` from it (shell exports win over `.env` if both are set).

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remove AI Marks"
+  short_description: "Inspect and clean authorized AI provenance marks"
+  default_prompt: "Use $remove-ai-marks to inspect and clean authorized AI provenance marks from this file."

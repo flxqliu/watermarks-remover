@@ -8,6 +8,7 @@
 !/docs/**
 !/service/
 !/service/**
+!/skills/
 !/skills/remove-ai-marks/
 !/skills/remove-ai-marks/**
 !/tests/
