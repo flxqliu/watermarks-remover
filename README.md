@@ -880,8 +880,9 @@ make smoke                          # quick CLI smoke on fixtures
 
 ## Changelog
 
-### Unreleased — detection-guided iterative Layer B rewriting
+### Unreleased
 
+- **Fix Layer A missing three invisible Default_Ignorable carriers**: `U+180F` (Mongolian free variation selector-4, added in Unicode 14), `U+3164` (Hangul filler), and `U+FFA0` (halfwidth Hangul filler) are blank-rendering Default_Ignorable code points, but their Unicode categories (`Mn`/`Lo`) meant the `Cf` catch-all never saw them and they were absent from the strip set — so both `inspect_text` and `clean_text` passed them through untouched even between plain ASCII. They are now stripped and flagged like their already-covered siblings (`U+180B`–`U+180D`, `U+115F`/`U+1160`); `U+180F` is preserved after a Mongolian letter exactly like FVS1–3. Applied to both the service engine and the vendored lightweight-skill copy
 - **Layer B rewriting is now iterative and evaluation-driven**: each round
   generates `--candidates` variants (default 1,
   `WATERMARKS_REWRITE_CANDIDATES`) and `--max-loops` (default 1,

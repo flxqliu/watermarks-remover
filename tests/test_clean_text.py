@@ -252,6 +252,32 @@ def test_clean_preserves_mongolian_fvs():
     assert cleaned == raw
 
 
+def test_clean_preserves_mongolian_fvs4():
+    # FVS4 (U+180F, added in Unicode 14) selects a glyph variant just like
+    # FVS1-3 and must stay bound to its Mongolian base.
+    raw = "ᠠ᠏ᠡ"
+    cleaned, stats = clean_text(raw)
+    assert cleaned == raw
+    assert stats["removed_count"] == 0
+
+
+def test_clean_strips_missed_default_ignorable_carriers():
+    # Mongolian FVS4, Hangul Filler, and Halfwidth Hangul Filler are
+    # blank-rendering Default_Ignorable carriers (Mn/Lo, so the Cf catch-all
+    # never saw them). Between Latin they are contraband and must be stripped.
+    for cp in (0x180F, 0x3164, 0xFFA0):
+        raw = "word" + chr(cp) + "word"
+        cleaned, stats = clean_text(raw)
+        assert cleaned == "wordword"
+        assert stats["removed_count"] == 1
+
+
+def test_inspect_flags_missed_default_ignorable_carriers():
+    for cp in (0x180F, 0x3164, 0xFFA0):
+        report = inspect_text("word" + chr(cp) + "word")
+        assert report.suspicious_total >= 1
+
+
 def test_clean_preserves_khmer_inherent_vowels():
     # Invisible but phonemic inherent vowels after a Khmer consonant.
     for raw in ("\u1780\u17b4\u1781", "\u1780\u17b5\u1781"):

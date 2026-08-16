@@ -21,6 +21,7 @@ STRIP_CODEPOINTS: frozenset[int] = frozenset(
         0x180C,
         0x180D,
         0x180E,  # Mongolian vowel separator
+        0x180F,  # Mongolian free variation selector-4 (Unicode 14)
         0x200B,  # zero width space
         0x200C,  # zero width non-joiner
         0x200D,  # zero width joiner
@@ -63,6 +64,8 @@ STRIP_CODEPOINTS: frozenset[int] = frozenset(
         0xFE0D,
         0xFE0E,
         0xFE0F,
+        0x3164,  # Hangul filler (blank compatibility jamo)
+        0xFFA0,  # halfwidth Hangul filler
         0xFFF9,  # interlinear annotation
         0xFFFA,
         0xFFFB,
@@ -227,7 +230,7 @@ def _strip_kind(cp: int) -> str:
     """Finer-grained inspect kind for strip-class codepoints."""
     if 0xE0001 <= cp <= 0xE007F:
         return "tag_chars"
-    if cp in _VS_SUPPLEMENT or 0xFE00 <= cp <= 0xFE0F or 0x180B <= cp <= 0x180D:
+    if cp in _VS_SUPPLEMENT or 0xFE00 <= cp <= 0xFE0F or cp in _MONGOLIAN_FVS:
         return "variation_selector"
     if cp in _BIDI_CPS:
         return "bidi"
@@ -277,7 +280,7 @@ _TAG_RANGE = range(0xE0020, 0xE0080)
 _ORTHOGRAPHIC_CF: frozenset[int] = frozenset(
     {0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605, 0x06DD, 0x070F, 0x08E2, 0x110BD, 0x110CD}
 )
-_MONGOLIAN_FVS: frozenset[int] = frozenset({0x180B, 0x180C, 0x180D})
+_MONGOLIAN_FVS: frozenset[int] = frozenset({0x180B, 0x180C, 0x180D, 0x180F})
 _KHMER_VOWELS: frozenset[int] = frozenset({0x17B4, 0x17B5})
 _HANGUL_FILLERS: frozenset[int] = frozenset({0x115F, 0x1160})
 _SCRIPT_GLUE: frozenset[int] = _MONGOLIAN_FVS | _KHMER_VOWELS | _HANGUL_FILLERS
@@ -311,7 +314,7 @@ def _is_mongolian_base(cp: int) -> bool:
 
 
 def _is_variation_selector(cp: int) -> bool:
-    return cp in _VS_SUPPLEMENT or 0xFE00 <= cp <= 0xFE0F or 0x180B <= cp <= 0x180D
+    return cp in _VS_SUPPLEMENT or 0xFE00 <= cp <= 0xFE0F or cp in _MONGOLIAN_FVS
 
 
 def _valid_flag_tag_indices(text: str) -> set[int]:
@@ -406,7 +409,7 @@ def _decide(
         prev_cp = ord(prev_input)
         if cp in _VS_SUPPLEMENT and _is_cjk_ideograph(prev_cp):
             return ("keep", ch, None)
-        if 0x180B <= cp <= 0x180D and _is_mongolian_base(prev_cp):
+        if cp in _MONGOLIAN_FVS and _is_mongolian_base(prev_cp):
             return ("keep", ch, None)
         if 0xFE00 <= cp <= 0xFE0D and _is_cjk_ideograph(prev_cp):
             return ("keep", ch, None)
