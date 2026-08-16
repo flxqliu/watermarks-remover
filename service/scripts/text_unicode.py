@@ -237,6 +237,26 @@ _PRESERVABLE_BIDI_CPS: frozenset[int] = frozenset(
     }
 )
 
+# Visible-layout format controls: Egyptian hieroglyph quadrat controls,
+# Duployan shorthand overlap/step controls, and musical beam/tie/slur/phrase
+# controls are Cf but visibly govern how their script renders. Next to their
+# own script they are document body, not carriers; floating between unrelated
+# text they stay strip-class. Context ranges include each script's own block
+# (and the controls themselves) so control sequences survive intact.
+_LAYOUT_CF_CONTROLS: tuple[tuple[range, range], ...] = (
+    (range(0x13430, 0x13440), range(0x13000, 0x14400)),  # Egyptian hieroglyphs
+    (range(0x1BCA0, 0x1BCA4), range(0x1BC00, 0x1BCA4)),  # Duployan shorthand
+    (range(0x1D173, 0x1D17B), range(0x1D100, 0x1D200)),  # musical symbols
+)
+
+
+def _layout_cf_script(cp: int) -> range | None:
+    for controls, script in _LAYOUT_CF_CONTROLS:
+        if cp in controls:
+            return script
+    return None
+
+
 # Zero-width family (common edit-based carriers)
 _ZW_FAMILY: frozenset[int] = frozenset({0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x180E})
 
@@ -479,6 +499,12 @@ def _decide(
             return ("keep", ch, None)
         if cp in _ORTHOGRAPHIC_CF:
             return ("keep", ch, None)
+        script = _layout_cf_script(cp)
+        if script is not None and (
+            (prev_input is not None and ord(prev_input) in script)
+            or (next_input is not None and ord(next_input) in script)
+        ):
+            return ("keep", ch, None)
     if _is_strip_cp(cp):
         return ("strip", "", _strip_kind(cp))
     if normalize_spaces and cp in SPACE_HOMOGLYPHS:
@@ -593,7 +619,7 @@ def inspect_text(
         "Layer A only: invisible/format Unicode and space homoglyphs (edit-based carriers).",
         "Statistical (token-sampling) watermarks are not detectable here; use Layer B rewrite.",
         "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, private_use, space, confusable, other_cf.",
-        "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, complete flag tag sequences, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), RTL directional marks/paired embeddings, and orthographic Arabic/Syriac Cf marks. Inspection still reports bidi controls. Use explicit strip flags only after review.",
+        "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, complete flag tag sequences, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), RTL directional marks/paired embeddings, orthographic Arabic/Syriac Cf marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat, Duployan shorthand, musical beaming). Inspection still reports bidi controls. Use explicit strip flags only after review.",
     ]
     if not hits:
         notes.append(

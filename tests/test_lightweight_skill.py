@@ -57,12 +57,13 @@ def _run_vendored_clean_and_inspect(cps):
 def test_lightweight_clean_strips_reserved_default_ignorables():
     # The vendored engine must match the service engine on the unassigned
     # Default_Ignorable ranges (PropList.txt Other_Default_Ignorable_Code_Point).
-    cps = (
-        [0x2065, 0xE0000]
-        + list(range(0xFFF0, 0xFFF9))
-        + list(range(0xE0080, 0xE0100))
-        + list(range(0xE01F0, 0xE1000))
-    )
+    cps = [
+        0x2065,
+        0xE0000,
+        *range(0xFFF0, 0xFFF9),
+        *range(0xE0080, 0xE0100),
+        *range(0xE01F0, 0xE1000),
+    ]
     assert _run_vendored_clean_and_inspect(cps) == {"reserved_ignorable"}
 
 
@@ -147,3 +148,29 @@ def test_lightweight_preserves_legitimate_bidi_and_emoji_glue():
             check=True,
         )
         assert result.stdout.rstrip("\n") == raw
+
+
+def test_lightweight_preserves_egyptian_format_controls():
+    # The vendored engine must match the service engine on visible-layout
+    # format controls: preserved next to their script, stripped when floating.
+    kept = "\U00013079\U00013430\U000130a7"
+    result = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "clean_text.py"), "-"],
+        input=kept,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.rstrip("\n") == kept
+
+    floating = "a\U00013430b"
+    result = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "clean_text.py"), "-"],
+        input=floating,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.rstrip("\n") == "ab"
