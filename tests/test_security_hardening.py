@@ -24,6 +24,7 @@ from common import (
 )
 from container_meta import (
     MAX_ZIP_DECOMPRESSED_BYTES,
+    ZipBudgetExceeded,
     _check_zip_budget,
     inspect_docx,
 )
@@ -51,7 +52,7 @@ def test_zip_budget_rejects_oversized_member():
     raised = False
     try:
         _check_zip_budget(info, [0])
-    except ValueError:
+    except ZipBudgetExceeded:
         raised = True
     assert raised
 
@@ -70,7 +71,7 @@ def test_zip_budget_accumulates_across_members():
     for info in infos:
         try:
             _check_zip_budget(info, budget)
-        except ValueError:
+        except ZipBudgetExceeded:
             raised = True
             break
     assert raised
