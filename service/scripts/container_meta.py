@@ -16,32 +16,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
-class ZipBudgetExceeded(Exception):
-    """A zip's declared decompressed size exceeds the processing cap.
-
-    Kept separate from the parse errors below so a refused zip bomb keeps
-    propagating (as it already does out of the clean_* helpers) instead of
-    being reported as an unparseable container.
-    """
-
-
-# A corrupt, truncated, encrypted, or unsupported-compression zip surfaces as
-# more than just BadZipFile: reading a member can raise NotImplementedError
-# (unknown compression/version), RuntimeError (encrypted), zlib.error (bad
-# deflate stream), EOFError (truncated), OSError (invalid stream), or
-# ValueError (e.g. a negative seek).
-_ZIP_PARSE_ERRORS = (
-    zipfile.BadZipFile,
-    zipfile.LargeZipFile,
-    NotImplementedError,
-    RuntimeError,
-    EOFError,
-    OSError,
-    ValueError,
-    zlib.error,
-)
-
 from common import (
     classify_finding_confidence,
     safe_arg,
@@ -71,6 +45,32 @@ from image_meta import (
 )
 from image_meta import (
     detect_format as detect_image_format,
+)
+
+
+class ZipBudgetExceeded(Exception):
+    """A zip's declared decompressed size exceeds the processing cap.
+
+    Kept separate from the parse errors below so a refused zip bomb keeps
+    propagating (as it already does out of the clean_* helpers) instead of
+    being reported as an unparseable container.
+    """
+
+
+# A corrupt, truncated, encrypted, or unsupported-compression zip surfaces as
+# more than just BadZipFile: reading a member can raise NotImplementedError
+# (unknown compression/version), RuntimeError (encrypted), zlib.error (bad
+# deflate stream), EOFError (truncated), OSError (invalid stream), or
+# ValueError (e.g. a negative seek).
+_ZIP_PARSE_ERRORS = (
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    NotImplementedError,
+    RuntimeError,
+    EOFError,
+    OSError,
+    ValueError,
+    zlib.error,
 )
 
 # Frontmatter / meta keys that often carry AI provenance

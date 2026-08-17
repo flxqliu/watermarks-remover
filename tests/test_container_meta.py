@@ -19,12 +19,12 @@ sys.path.insert(0, str(SCRIPTS))
 
 from container_meta import (
     clean_container,
-    detect_container_format,
     clean_docx,
     clean_html,
     clean_markdown,
     clean_odt,
     clean_svg,
+    detect_container_format,
     inspect_container,
     inspect_docx,
     inspect_html,
@@ -701,11 +701,11 @@ def test_container_inspectors_survive_malformed_zip():
     # A truncated or garbage container degrades to a clear finding instead of
     # raising, for docx, odt, and format detection.
     truncated = bytes([0x50, 0x4B, 0x03, 0x04]) + bytes(8)
-    garbage = b'not a zip at all'
+    garbage = b"not a zip at all"
     for data in (truncated, garbage):
-        assert inspect_docx(data) == (False, False, ['not a valid DOCX zip'], {})
-        assert inspect_odt(data) == (False, False, ['not a valid ODT zip'], {})
-        assert detect_container_format(Path('x.bin'), data) == 'unknown'
+        assert inspect_docx(data) == (False, False, ["not a valid DOCX zip"], {})
+        assert inspect_odt(data) == (False, False, ["not a valid ODT zip"], {})
+        assert detect_container_format(Path("x.bin"), data) == "unknown"
 
 
 def test_zip_budget_rejection_propagates_from_inspect(monkeypatch):
@@ -714,8 +714,8 @@ def test_zip_budget_rejection_propagates_from_inspect(monkeypatch):
     import container_meta
 
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w') as zf:
-        zf.writestr('word/document.xml', '<w:document/>')
-    monkeypatch.setattr(container_meta, 'MAX_ZIP_DECOMPRESSED_BYTES', 1)
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("word/document.xml", "<w:document/>")
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 1)
     with pytest.raises(container_meta.ZipBudgetExceeded):
         inspect_docx(buf.getvalue())
