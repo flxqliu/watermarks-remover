@@ -63,6 +63,7 @@ BINARY_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "a JPEG image"),
     (b"GIF87a", "a GIF image"),
     (b"GIF89a", "a GIF image"),
+    (b"BM", "a BMP image"),
     (b"II*\x00", "a TIFF image"),
     (b"MM\x00*", "a TIFF image"),
     (b"RIFF", "a RIFF container (WEBP, WAV, AVI)"),

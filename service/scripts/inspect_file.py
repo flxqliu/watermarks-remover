@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified inspect: text, images (PNG/JPEG/WebP), and document containers."""
+"""Unified inspect: text, images, and document containers."""
 
 from __future__ import annotations
 

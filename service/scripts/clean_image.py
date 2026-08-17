@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strip C2PA and AI-related metadata from PNG/JPEG/WebP."""
+"""Strip C2PA and AI-related metadata from raster images (PNG/JPEG/WebP/AVIF/HEIC/BMP/GIF/TIFF)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from image_meta import clean_image
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("path", type=Path, help="Input PNG, JPEG, or WebP")
+    p.add_argument("path", type=Path, help="Input image (PNG/JPEG/WebP/AVIF/HEIC/BMP/GIF/TIFF)")
     p.add_argument("-o", "--output", type=Path, help="Output path (default: *.cleaned.*)")
     p.add_argument(
         "--in-place",

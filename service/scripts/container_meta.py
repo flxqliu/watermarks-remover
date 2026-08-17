@@ -1,6 +1,6 @@
 """Inspect/clean AI provenance metadata in non-raster containers.
 
-Formats: SVG, PDF (best-effort), DOCX, ODT, HTML, Markdown frontmatter.
+Formats: SVG, PDF (best-effort), DOCX, ODT, HTML, Markdown frontmatter, EPUB.
 Stdlib-first; PDF prefers optional exiftool/c2patool when present.
 """
 
@@ -26,14 +26,20 @@ from common import (
 from image_meta import (
     AI_META_HINTS,
     C2PA_MARKERS,
+    inspect_bmp,
+    inspect_gif,
     inspect_isobmff,
     inspect_jpeg,
     inspect_png,
+    inspect_tiff,
     inspect_webp,
     run_optional_tools,
+    strip_bmp,
+    strip_gif,
     strip_isobmff,
     strip_jpeg,
     strip_png,
+    strip_tiff,
     strip_webp,
 )
 from image_meta import (
@@ -130,6 +136,8 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
         return "pptx"
     if ext in (".odt",):
         return "odt"
+    if ext in (".epub",):
+        return "epub"
     if ext in (".html", ".htm"):
         return "html"
     if ext in (".md", ".markdown", ".mdx"):
@@ -152,6 +160,8 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
                         return "pptx"
                     if "content.xml" in names and "meta.xml" in names:
                         return "odt"
+                    if "META-INF/container.xml" in names and any(n.endswith(".opf") for n in names):
+                        return "epub"
             except zipfile.BadZipFile:
                 pass
     return "unknown"
@@ -681,7 +691,9 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
                 name = info.filename
                 # Check media parts for C2PA/AI metadata
                 if re.search(
-                    r"^(?:word|xl|ppt)/media/.+\.(png|jpe?g|webp|avif|heic|svg)$", name, re.I
+                    r"^(?:word|xl|ppt)/media/.+\.(png|jpe?g|webp|avif|heic|gif|bmp|tiff?|svg)$",
+                    name,
+                    re.I,
                 ):
                     raw = zf.read(name)
                     img_fmt = detect_image_format(raw)
@@ -694,6 +706,12 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
                         sub_c2pa, sub_ai, sub_findings = inspect_webp(raw)
                     elif img_fmt in ("avif", "heic"):
                         sub_c2pa, sub_ai, sub_findings = inspect_isobmff(raw, img_fmt)
+                    elif img_fmt == "gif":
+                        sub_c2pa, sub_ai, sub_findings = inspect_gif(raw)
+                    elif img_fmt == "tiff":
+                        sub_c2pa, sub_ai, sub_findings = inspect_tiff(raw)
+                    elif img_fmt == "bmp":
+                        sub_c2pa, sub_ai, sub_findings = inspect_bmp(raw)
                     elif name.lower().endswith(".svg") or raw.lstrip().startswith(b"<"):
                         sub_c2pa, sub_ai, sub_findings, _ = inspect_svg(raw)
                     if sub_c2pa:
@@ -891,8 +909,12 @@ def _scrub_ooxml_zip(
             _check_zip_budget(info, budget)
             raw = zin.read(name)
 
-            # 1. Clean embedded media (PNG, JPEG, WebP, AVIF, HEIC, SVG)
-            if re.search(r"^(?:word|xl|ppt)/media/.+\.(png|jpe?g|webp|avif|heic|svg)$", name, re.I):
+            # 1. Clean embedded media (PNG, JPEG, WebP, AVIF, HEIC, GIF, BMP, TIFF, SVG)
+            if re.search(
+                r"^(?:word|xl|ppt)/media/.+\.(png|jpe?g|webp|avif|heic|gif|bmp|tiff?|svg)$",
+                name,
+                re.I,
+            ):
                 img_fmt = detect_image_format(raw)
                 sub_actions: list[str] = []
                 cleaned_bytes = raw
@@ -907,6 +929,12 @@ def _scrub_ooxml_zip(
                         cleaned_bytes, sub_actions = strip_isobmff(
                             raw, img_fmt, strip_all_metadata=True
                         )
+                    elif img_fmt == "gif":
+                        cleaned_bytes, sub_actions = strip_gif(raw, strip_all_metadata=True)
+                    elif img_fmt == "bmp":
+                        cleaned_bytes, sub_actions = strip_bmp(raw, strip_all_metadata=True)
+                    elif img_fmt == "tiff":
+                        cleaned_bytes, sub_actions = strip_tiff(raw, strip_all_metadata=True)
                     elif name.lower().endswith(".svg") or raw.lstrip().startswith(b"<"):
                         cleaned_bytes, sub_actions = clean_svg(raw)
                 except Exception:  # noqa: S110 - malformed embedded media; keep original part
@@ -1113,6 +1141,247 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
 
 
 # ---------------------------------------------------------------------------
+# EPUB
+# ---------------------------------------------------------------------------
+
+_EPUB_MEDIA_RE = re.compile(r"\.(png|jpe?g|webp|avif|heic|gif|bmp|tiff?|svg)$", re.I)
+
+
+def _epub_content_part(name: str) -> bool:
+    """True for parts that carry visible content or structure and must never be dropped.
+
+    XHTML/HTML, CSS, JS, navigation (ncx), the package document (opf), raster
+    and vector media, fonts, the 'mimetype' part, relationship files, and the
+    OCF control files are content or structure. Everything else (META-INF
+    custom parts, stray XML at the archive root) is a candidate for dropping
+    when it carries AI/C2PA markers.
+    """
+    low = name.lower()
+    return bool(
+        low == "mimetype"
+        or low.endswith(".rels")
+        or low
+        in (
+            "meta-inf/container.xml",
+            "meta-inf/encryption.xml",
+            "meta-inf/signatures.xml",
+            "meta-inf/rights.xml",
+        )
+        or re.search(
+            r"\.(xhtml|html?|css|js|ncx|opf|svg|png|jpe?g|webp|avif|heic|gif|bmp|tiff?|ttf|otf|woff2?)$",
+            low,
+        )
+    )
+
+
+def _epub_encrypted_parts(data: bytes) -> set[str]:
+    """Return part names listed as encrypted in META-INF/encryption.xml (OCF)."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            if "META-INF/encryption.xml" not in zf.namelist():
+                return set()
+            xml = zf.read("META-INF/encryption.xml").decode("utf-8", errors="replace")
+    except (zipfile.BadZipFile, KeyError):
+        return set()
+    names: set[str] = set()
+    for uri in re.findall(r'CipherReference\s+URI="([^"]+)"', xml, re.I):
+        # The URI is relative to META-INF/ per OCF, but producers are not
+        # consistent, so accept every plausible normalization.
+        names.add(posixpath.normpath(posixpath.join("META-INF", uri)))
+        names.add(posixpath.normpath(uri))
+        if uri.startswith("../"):
+            names.add(posixpath.normpath(uri[3:]))
+    return names
+
+
+def inspect_epub(data: bytes) -> tuple[bool, bool, list[str], dict]:
+    findings: list[str] = []
+    has_c2pa = False
+    has_ai = False
+    budget = [0]
+    encrypted = _epub_encrypted_parts(data)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+            for info in zf.infolist():
+                _check_zip_budget(info, budget)
+                name = info.filename
+                if name in encrypted:
+                    findings.append(f"{name}: encrypted content (skipped)")
+                    continue
+                raw = zf.read(name)
+                if name.lower().endswith((".xhtml", ".html", ".htm")):
+                    text = raw.decode("utf-8", errors="surrogateescape")
+                    c2, ai, sub, _ = inspect_html(text)
+                    if c2:
+                        has_c2pa = True
+                    if ai:
+                        has_ai = True
+                    for f in sub:
+                        findings.append(f"{name}: {f}")
+                    continue
+                if name.lower().endswith(".opf"):
+                    text = raw.decode("utf-8", errors="surrogateescape")
+                    if AI_META_NAME_RE.search(text):
+                        has_ai = True
+                        findings.append(f"{name}: AI-ish metadata in package document")
+                    c2, ai, hits = _blob_hits(raw)
+                    if c2 or ai:
+                        has_c2pa = has_c2pa or c2
+                        has_ai = has_ai or ai
+                        findings.append(f"{name}: {', '.join(hits[:6])}")
+                    continue
+                c2, ai, hits = _blob_hits(raw)
+                if c2 or ai:
+                    has_c2pa = has_c2pa or c2
+                    has_ai = has_ai or ai
+                    findings.append(f"{name}: {', '.join(hits[:6])}")
+    except zipfile.BadZipFile:
+        return False, False, ["not a valid EPUB zip"], {}
+    return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(names)}
+
+
+def _scrub_epub_opf(text: str) -> tuple[str, list[str]]:
+    """Scrub AI-ish metadata from the EPUB package document (OPF)."""
+    actions: list[str] = []
+
+    def _meta(m: re.Match[str]) -> str:
+        tag = m.group(0)
+        if AI_META_NAME_RE.search(tag):
+            actions.append("drop OPF meta tag")
+            return ""
+        return tag
+
+    new = re.sub(r"<meta\b[^>]*/>", _meta, text, flags=re.I)
+    new = re.sub(r"<meta\b[^>]*>.*?</meta\s*>", _meta, new, flags=re.I | re.DOTALL)
+
+    def _dc(m: re.Match[str]) -> str:
+        if AI_META_NAME_RE.search(m.group(0)):
+            actions.append(f"scrub {m.group(1)} (AI vendor name)")
+            return f"<{m.group(1)}/>"
+        return m.group(0)
+
+    new = re.sub(
+        r"<(dc:(?:creator|contributor|publisher|description|rights|source))\b[^>]*>.*?</\1\s*>",
+        _dc,
+        new,
+        flags=re.I | re.DOTALL,
+    )
+
+    if not actions:
+        actions.append("no OPF metadata removed")
+    return new, actions
+
+
+def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+    """Rewrite the EPUB: scrub OPF metadata, XHTML meta/JSON-LD, and Layer A.
+
+    Embedded raster/SVG media get their own metadata stripped; structural and
+    OCF control parts (mimetype, container.xml, encryption.xml, relationships,
+    fonts) are kept so the book stays readable. Parts listed in
+    META-INF/encryption.xml are copied verbatim — their bytes are ciphertext,
+    so any rewrite would corrupt them. Non-content parts carrying AI/C2PA
+    markers are dropped.
+    """
+    from text_unicode import clean_text  # local import to avoid cycles
+
+    actions: list[str] = []
+    budget = [0]
+    layer_removed = 0
+    layer_replaced = 0
+    encrypted = _epub_encrypted_parts(data)
+    out_buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(data)) as zin,
+        zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout,
+    ):
+        for info in zin.infolist():
+            name = info.filename
+            _check_zip_budget(info, budget)
+            raw = zin.read(name)
+            low = name.lower()
+
+            # Encrypted parts are opaque ciphertext: pass through untouched.
+            if name in encrypted:
+                zout.writestr(info, raw)
+                continue
+
+            # 1. Embedded raster / vector media: strip metadata
+            if _EPUB_MEDIA_RE.search(low):
+                img_fmt = detect_image_format(raw)
+                sub_actions: list[str] = []
+                cleaned = raw
+                try:
+                    if img_fmt == "png":
+                        cleaned, sub_actions = strip_png(raw, strip_all_text=True)
+                    elif img_fmt == "jpeg":
+                        cleaned, sub_actions = strip_jpeg(raw, strip_all_app=True)
+                    elif img_fmt == "webp":
+                        cleaned, sub_actions = strip_webp(raw, strip_all_metadata=True)
+                    elif img_fmt in ("avif", "heic"):
+                        cleaned, sub_actions = strip_isobmff(raw, img_fmt, strip_all_metadata=True)
+                    elif img_fmt == "gif":
+                        cleaned, sub_actions = strip_gif(raw, strip_all_metadata=True)
+                    elif img_fmt == "bmp":
+                        cleaned, sub_actions = strip_bmp(raw, strip_all_metadata=True)
+                    elif img_fmt == "tiff":
+                        cleaned, sub_actions = strip_tiff(raw, strip_all_metadata=True)
+                    elif low.endswith(".svg") or raw.lstrip().startswith(b"<"):
+                        cleaned, sub_actions = clean_svg(raw)
+                except Exception:  # noqa: S110 - malformed embedded media; keep original
+                    pass
+                if any("drop" in a.lower() for a in sub_actions) and cleaned != raw:
+                    actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
+                    raw = cleaned
+                zout.writestr(info, raw)
+                continue
+
+            # 2. XHTML content: strip AI meta/JSON-LD, then Layer A
+            if low.endswith((".xhtml", ".html", ".htm")):
+                text = raw.decode("utf-8", errors="surrogateescape")
+                text, sub_actions = clean_html(text)
+                if sub_actions and sub_actions != ["no HTML AI meta removed"]:
+                    actions.append(f"{name}: {', '.join(sub_actions[:2])}")
+                if also_layer_a_text:
+                    text2, stats = clean_text(text)
+                    if stats["removed_count"] or stats["replaced_count"]:
+                        layer_removed += stats["removed_count"]
+                        layer_replaced += stats["replaced_count"]
+                        text = text2
+                raw = text.encode("utf-8", errors="surrogateescape")
+                zout.writestr(info, raw)
+                continue
+
+            # 3. Package document (OPF): scrub AI-ish metadata
+            if low.endswith(".opf"):
+                text = raw.decode("utf-8", errors="surrogateescape")
+                new_text, sub_actions = _scrub_epub_opf(text)
+                if sub_actions and sub_actions != ["no OPF metadata removed"]:
+                    actions.extend(f"{name}: {a}" for a in sub_actions)
+                raw = new_text.encode("utf-8", errors="surrogateescape")
+                zout.writestr(info, raw)
+                continue
+
+            # 4. Other parts: drop non-content parts carrying AI/C2PA markers
+            c2, ai, _hits = _blob_hits(raw)
+            if (c2 or ai) and not _epub_content_part(name):
+                actions.append(f"drop part {name} (AI/C2PA markers)")
+                continue
+
+            # 5. mimetype must stay first and stored — it already is, since we
+            #    write in the original entry order; force stored compression.
+            if low == "mimetype":
+                info.compress_type = zipfile.ZIP_STORED
+            zout.writestr(info, raw)
+
+    if layer_removed or layer_replaced:
+        actions.append(f"layer A text: removed={layer_removed} replaced={layer_replaced}")
+    if not actions:
+        actions.append("no EPUB metadata removed")
+    return out_buf.getvalue(), actions
+
+
+# ---------------------------------------------------------------------------
 # PDF
 # ---------------------------------------------------------------------------
 
@@ -1290,6 +1559,8 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         has_c2pa, has_ai, findings, details = inspect_pptx(data)
     elif fmt == "odt":
         has_c2pa, has_ai, findings, details = inspect_odt(data)
+    elif fmt == "epub":
+        has_c2pa, has_ai, findings, details = inspect_epub(data)
     elif fmt == "html":
         # surrogateescape, not replace: clean_container() decodes the same way,
         # and U+FFFD substitutions would make the two disagree on the counts.
@@ -1314,6 +1585,28 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         layer_a_hits = ta["hits"]
         for h in layer_a_hits:
             findings.append(f"layer-a: {h['codepoint']} {h['label']} x{h['count']} ({h['kind']})")
+    elif fmt == "epub":
+        from text_unicode import inspect_text  # local import to avoid cycles
+
+        encrypted = _epub_encrypted_parts(data)
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for info in zf.infolist():
+                    if info.filename in encrypted:
+                        continue
+                    if info.filename.lower().endswith((".xhtml", ".html", ".htm")):
+                        ta = inspect_text(
+                            zf.read(info.filename).decode("utf-8", errors="surrogateescape")
+                        ).to_dict()
+                        layer_a_total += ta["suspicious_total"]
+                        for h in ta["hits"]:
+                            layer_a_hits.append(h)
+                            findings.append(
+                                f"layer-a ({info.filename}): {h['codepoint']} {h['label']} "
+                                f"x{h['count']} ({h['kind']})"
+                            )
+        except zipfile.BadZipFile:
+            pass
 
     notes: list[str] = []
     if fmt == "pdf":
@@ -1322,6 +1615,10 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         )
     elif fmt in ("docx", "xlsx", "pptx"):
         notes.append(f"{fmt.upper()}: metadata/provenance and embedded media are scanned")
+    elif fmt == "epub":
+        notes.append(
+            "EPUB: package-document metadata, XHTML meta/JSON-LD, and embedded media are scanned"
+        )
     if "unsupported" in details:
         notes.append(f"format not fully inspected: {fmt}")
     if layer_a_total:
@@ -1386,6 +1683,9 @@ def clean_container(
         safe_write_bytes(dest, cleaned)
     elif fmt == "odt":
         cleaned, actions = clean_odt(data, also_layer_a_text=also_layer_a_text)
+        safe_write_bytes(dest, cleaned)
+    elif fmt == "epub":
+        cleaned, actions = clean_epub(data, also_layer_a_text=also_layer_a_text)
         safe_write_bytes(dest, cleaned)
     elif fmt == "html":
         text = data.decode("utf-8", errors="surrogateescape")

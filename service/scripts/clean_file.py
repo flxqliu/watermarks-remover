@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified clean: text Layer A, PNG/JPEG/WebP metadata, and document containers."""
+"""Unified clean: text Layer A, raster metadata, and document containers."""
 
 from __future__ import annotations
 

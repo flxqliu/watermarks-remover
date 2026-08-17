@@ -19,7 +19,7 @@ Agent skill + stdlib Python service to strip **multi-vendor AI provenance marks*
 | --- | --- | --- |
 | **A** | Invisible Unicode, exotic spaces, bidi, tag chars | Deterministic Python scripts |
 | **B** | Statistical (token-sampling) text watermarks | Agent rewrite + optional `rewrite_text.py` hook |
-| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, SVG, PDF, DOCX, ODT, HTML, Markdown |
+| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, BMP, GIF, TIFF, SVG, PDF, DOCX, EPUB, ODT, HTML, Markdown |
 
 Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style marks.
 
@@ -585,9 +585,14 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | Format | Inspect | Clean |
 | --- | --- | --- |
 | PNG / JPEG / WebP | C2PA chunks / APP11 / RIFF `C2PA`, AI XMP hints | Drop metadata segments |
+| AVIF / HEIC | ISOBMFF `jumb` / XMP `uuid` boxes | Drop boxes |
+| BMP | Trailing non-image bytes (no standardized channel) | Truncate trailing metadata, fix file-size field |
+| GIF | Comment / XMP application extensions | Drop comment & XMP, keep `NETSCAPE2.0` loop |
+| TIFF (classic + BigTIFF) | IFD tags: XMP, EXIF, GPS, IPTC, MakerNote | Drop tags, zero payloads, keep strips |
 | SVG | `<metadata>`, XMP | Strip blocks |
 | PDF | Byte/XMP + optional tools | **exiftool** then **qpdf**; degraded without either |
 | DOCX | docProps / customXml | Scrub props, drop customXml |
+| EPUB | OPF metadata, XHTML meta/JSON-LD, embedded media | Scrub OPF, strip XHTML meta, clean media + Layer A (skips encrypted parts) |
 | ODT | meta.xml | Drop generator / AI-ish meta |
 | HTML | meta, JSON-LD, data-ai* | Strip tags/attrs |
 | Markdown | YAML frontmatter AI keys | Drop keys + Layer A body |
@@ -706,6 +711,8 @@ make smoke                          # quick CLI smoke on fixtures
 - **Fix ctrlregen image build**: the 2023-era research pins (`safetensors==0.4.3`, `transformers==4.37.2` → `tokenizers<0.19`) ship no Python 3.14 wheels, so the base image is now `python:3.11-slim` (digest-pinned, multi-arch)
 - **Fix harness images at runtime**: `Dockerfile.markllm` and `Dockerfile.markdiffusion` never copied `common.py` into `/app` (pre-existing bug) — added
 - **WebP**: stdlib-only inspection and metadata cleaning for RIFF `C2PA`, XMP, EXIF, and ICC profile chunks (#37)
+- **BMP / GIF / TIFF**: stdlib-only detection, inspection, and metadata cleaning — GIF comment/XMP extensions are dropped while `NETSCAPE2.0` looping is preserved; TIFF IFD metadata (XMP/EXIF/GPS/IPTC/MakerNote) is dropped with payloads zeroed and strip offsets kept, for both classic and BigTIFF; BMP trailing metadata is truncated with the file-size field rewritten
+- **EPUB**: stdlib-only container cleaning — OPF metadata and XHTML meta/JSON-LD scrubbed, embedded raster/SVG media stripped, Layer A applied to XHTML body text, marker-carrying metadata parts dropped, and OCF-encrypted parts passed through untouched
 - **Filename sanitization**: HTTP service refuses unsafe client-supplied output names
 - **Fix markdown frontmatter cleaner** crashing on and leaking nested AI keys (#25)
 - **Text tools refuse binary input**; `--force-text` overrides (#24)
