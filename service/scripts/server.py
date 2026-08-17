@@ -9,6 +9,7 @@ Endpoints:
     GET  /capabilities   -> which optional tools / pixel backends are present
     GET  /openapi.json   -> dynamically generated OpenAPI 3.0.3 spec
     POST /inspect        -> {"file": <base64>, "name": "x.png"} -> findings JSON
+    POST /detect         -> {"file": <base64>, "name": "x.txt"} -> watermark detector reports
     POST /clean          -> {"file": <base64>, "name": "x.png", "options": {...}}
                          -> {"cleaned": <base64>, "report": {...}}
 
@@ -43,8 +44,9 @@ from common import (
 )
 from container_meta import clean_container, inspect_container
 from format_dispatch import classify_bytes
-from image_meta import clean_image, inspect_image
+from image_meta import clean_image, inspect_image, run_synthid_score
 from score_stylometry import score_text_stylometry
+from text_detectors import detector_status, run_all_text_detectors, run_text_detectors
 from text_unicode import clean_text, inspect_text
 
 VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
@@ -64,6 +66,8 @@ ALLOWED_CLEAN_OPTIONS = {
     "also_layer_a_text": bool,
     "remove_pixel": str,
     "strip_all_metadata": bool,
+    "detect_before": bool,
+    "detect_after": bool,
 }
 
 
@@ -85,8 +89,10 @@ def capabilities() -> dict[str, Any]:
         },
         "scorers": {
             "synthid": bool(os.environ.get("REVERSE_SYNTHID_DIR")),
+            "synthid_http": bool(os.environ.get("WATERMARKS_SYNTHID_SCORER_URL")),
             "stylometry": True,
         },
+        "text_detectors": detector_status(),
         "harnesses": {
             "markllm": bool(os.environ.get("MARKLLM_DIR")),
         },
@@ -178,11 +184,16 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                             type="object",
                             properties={
                                 "synthid": _schema(type="boolean"),
+                                "synthid_http": _schema(type="boolean"),
                                 "stylometry": _schema(type="boolean"),
                             },
                         ),
                         "harnesses": _schema(
                             type="object", properties={"markllm": _schema(type="boolean")}
+                        ),
+                        "text_detectors": _schema(
+                            type="object",
+                            additionalProperties=_schema(type="boolean"),
                         ),
                     },
                 )
@@ -202,7 +213,25 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
             "summary": "Inspect a file for AI provenance marks (text / image / container auto-routed)",
             "requestBody": _schema(
                 required=True,
-                content={"application/json": _schema(schema=_file_request())},
+                content={
+                    "application/json": _schema(
+                        schema=_file_request(
+                            {
+                                "properties": {
+                                    "detect": _schema(
+                                        type="boolean",
+                                        description=(
+                                            "Also run configured text watermark detectors "
+                                            "(opt-in; may call vendor APIs and send text "
+                                            "to them)"
+                                        ),
+                                    )
+                                },
+                                "required": [],
+                            }
+                        )
+                    )
+                },
             ),
             "responses": {
                 "200": _schema(
@@ -234,6 +263,25 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                             type="string", description="Base64-encoded cleaned file bytes"
                         ),
                         "report": _schema(type="object"),
+                    },
+                )
+            },
+        }
+    },
+    "/detect": {
+        "post": {
+            "summary": "Run watermark detectors on a file (text: vendor/statistical; image: SynthID score)",
+            "requestBody": _schema(
+                required=True,
+                content={"application/json": _schema(schema=_file_request())},
+            ),
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "kind": _schema(type="string", enum=["text", "image", "container"]),
+                        "detections": _schema(type="array", items=_schema(type="object")),
                     },
                 )
             },
@@ -398,7 +446,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._respond(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
             return
-        if path not in ("/inspect", "/clean"):
+        if path not in ("/inspect", "/clean", "/detect"):
             self._respond(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
         body = self._read_json()
@@ -417,7 +465,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if path == "/inspect":
-                self._handle_inspect(data, name)
+                self._handle_inspect(data, name, body)
+            elif path == "/detect":
+                self._handle_detect(data, name)
             else:
                 self._handle_clean(data, name, body)
         except ValueError as e:
@@ -428,8 +478,9 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "internal error"}
             )
 
-    def _handle_inspect(self, data: bytes, name: str) -> None:
+    def _handle_inspect(self, data: bytes, name: str, body: dict[str, Any]) -> None:
         kind = classify_bytes(data, Path(name).suffix)
+        run_detect = body.get("detect") is True
         with tempfile.TemporaryDirectory(prefix="wm-inspect-") as tmp:
             path = _tmp_path(Path(tmp), name or "input")
             path.write_bytes(data)
@@ -442,18 +493,68 @@ class Handler(BaseHTTPRequestHandler):
                 report = inspect_text(raw_text).to_dict()
                 s_rep = score_text_stylometry(raw_text, path=name or "<text>")
                 report["stylometry"] = s_rep.to_dict()
+                if run_detect:
+                    report["text_detectors"] = run_all_text_detectors(raw_text)
             elif kind == "image":
                 report = inspect_image(path).to_dict()
             else:
                 report = inspect_container(path).to_dict()
+        detected_wm = any(
+            entry.get("available") and entry.get("is_watermarked")
+            for entry in report.get("text_detectors") or []
+        )
         suspicious = (
             bool(report.get("suspicious_total"))
             or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
             or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
+            or detected_wm
         )
         self._respond(
             HTTPStatus.OK, {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
         )
+
+    def _handle_detect(self, data: bytes, name: str) -> None:
+        kind = classify_bytes(data, Path(name).suffix)
+        with tempfile.TemporaryDirectory(prefix="wm-detect-") as tmp:
+            path = _tmp_path(Path(tmp), name or "input")
+            path.write_bytes(data)
+            if kind == "text":
+                if looks_binary(data):
+                    raise ValueError(
+                        "refusing to detect bytes that look like a binary container as text"
+                    )
+                raw_text = data.decode("utf-8", errors="surrogateescape")
+                detections: list[dict[str, Any]] = run_all_text_detectors(raw_text)
+                s_rep = score_text_stylometry(raw_text, path=name or "<text>")
+                detections.append({"detector": "stylometry", "available": True, **s_rep.to_dict()})
+            elif kind == "image":
+                score = run_synthid_score(path)
+                if score is None:
+                    score = {
+                        "detector": "synthid",
+                        "available": False,
+                        "error": (
+                            "no SynthID scorer configured (set "
+                            "WATERMARKS_SYNTHID_SCORER_URL or REVERSE_SYNTHID_DIR)"
+                        ),
+                    }
+                else:
+                    score.setdefault("detector", "synthid")
+                detections = [score]
+            else:
+                detections = []
+                report = inspect_container(path).to_dict()
+                self._respond(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "kind": kind,
+                        "detections": detections,
+                        "report": report,
+                    },
+                )
+                return
+        self._respond(HTTPStatus.OK, {"ok": True, "kind": kind, "detections": detections})
 
     def _handle_clean(self, data: bytes, name: str, body: dict[str, Any]) -> None:
         kind = classify_bytes(data, Path(name).suffix)
@@ -476,13 +577,22 @@ class Handler(BaseHTTPRequestHandler):
                         "refusing to clean bytes that look like a binary container as text"
                     )
                 text = data.decode("utf-8", errors="surrogateescape")
+                detect_before = bool(options.get("detect_before"))
+                detect_after = bool(options.get("detect_after"))
+                detector_reports: dict[str, Any] = {}
+                if detect_before:
+                    detector_reports["before"] = run_text_detectors(text)
                 cleaned, stats = clean_text(
                     text,
                     nfkc=bool(options.get("nfkc")),
                     aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
                 )
+                if detect_after:
+                    detector_reports["after"] = run_text_detectors(cleaned)
                 cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
                 report: dict[str, Any] = {"kind": "text", "stats": stats, "length": len(cleaned)}
+                if detector_reports:
+                    report["text_detectors"] = detector_reports
             elif kind == "image":
                 dest = tmpdir / "out.png"
                 strip_all = not bool(options.get("keep_non_ai_metadata"))
@@ -497,6 +607,10 @@ class Handler(BaseHTTPRequestHandler):
                     strip_all_metadata=strip_all,
                     remove_pixel=remove_pixel,
                 )
+                if bool(options.get("detect_before")) and result.get("synthid_before") is None:
+                    result["synthid_before"] = run_synthid_score(src)
+                if bool(options.get("detect_after")) and result.get("synthid_after") is None:
+                    result["synthid_after"] = run_synthid_score(dest)
                 cleaned_bytes = dest.read_bytes()
                 report = {"kind": "image", **result}
             else:

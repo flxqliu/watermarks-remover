@@ -56,10 +56,13 @@ curl -s "$WM/capabilities"
 ```
 
 Reports which optional tools are available server-side (`c2patool`, `exiftool`,
-`qpdf`), scorers present (`scorers.stylometry`, `scorers.synthid`), and which heavy
-backends are configured (`pixel_backends.ctrlregen`, `pixel_backends.diffusion`,
-`harnesses.markllm`). **Drive your advice from this**: only recommend pixel
-removal / SynthID scoring when the service reports the backend present.
+`qpdf`), scorers present (`scorers.stylometry`, `scorers.synthid`,
+`scorers.synthid_http`), vendor text-watermark detectors
+(`text_detectors.gemini-synthid-text`, `text_detectors.markllm`,
+`text_detectors.claude-text`), and which heavy backends are configured
+(`pixel_backends.ctrlregen`, `pixel_backends.diffusion`, `harnesses.markllm`).
+**Drive your advice from this**: only recommend pixel removal / SynthID
+scoring / vendor detection when the service reports the backend present.
 
 ## HTTP API (curl)
 
@@ -72,6 +75,7 @@ field and writes it to the output path itself.
 | GET | `/capabilities` | — | optional tools / backends present |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
+| POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
 
 The machine-readable contract lives at `$WM/openapi.json` — plug it into any
@@ -80,7 +84,9 @@ clients.
 
 `options` accepted by `/clean`: `nfkc`, `aggressive_homoglyphs` (text),
 `keep_non_ai_metadata`, `strip_all_metadata`, `remove_pixel` (`ctrlregen` |
-`diffusion`) (images), `also_layer_a_text` (containers).
+`diffusion`) (images), `also_layer_a_text` (containers), `detect_before` /
+`detect_after` (text and images: run watermark detection on the input and on
+the cleaned output, included in the report).
 
 **Inspect first** (decide, don't guess):
 
@@ -137,6 +143,25 @@ Optional pixel-domain **detection** (SynthID score) and pixel **removal**
 external heavy backends. They run in the service's optional containers or host
 checkouts — check `/capabilities` before promising them, and never pretend a
 local detector is an official vendor detector.
+
+### 2b. Watermark detection before/after (when configured)
+
+When `/capabilities` reports a vendor detector (`text_detectors.gemini-synthid-text`)
+or an image scorer (`scorers.synthid_http` / `scorers.synthid`), measure the
+result by detecting before and after cleaning:
+
+```bash
+curl -s -X POST "$WM/detect" -H 'Content-Type: application/json' \
+  -d '{"file": "'"$(base64 -w0 notes.txt)"'", "name": "notes.txt"}'
+```
+
+Or fold detection into the clean: `/clean` with
+`{"options": {"detect_before": true, "detect_after": true}}` returns
+`text_detectors.before/after` (text) or `synthid_before/synthid_after`
+(images) in the report. Note: vendor detection sends text to the configured
+provider (Gemini) — only use it with user consent, and report the vendor's
+verdict honestly (official SynthID-text detector for Gemini; MarkLLM is
+same-config-only research; Claude's detector is not public yet).
 
 ### 3. Deterministic clean (always for matching inputs)
 
@@ -276,7 +301,7 @@ Always state:
 - Layer B cannot be gold-verified without vendor detectors / keys. Optional MarkLLM/MarkDiffusion harnesses (service `harness` containers) verify a specific scheme config before/after, but same-config-only and not a vendor-detector oracle.
 - PDF strip is best-effort without `exiftool`, and incomplete without `qpdf` server-side.
 - Pixel-domain **image** watermarks can be removed optionally via the external CtrlRegen backend (`remove_pixel: ctrlregen`) or MarkDiffusion's DiffusionPurification (`remove_pixel: diffusion`); both are heavy, drift the image, and need the backend present (`/capabilities`). Audio/video watermarks remain out of scope.
-- The reverse-SynthID scorer is external, best-effort, and under a non-commercial Research License; not an official Google detector.
+- The reverse-SynthID scorer is external, best-effort, and under a non-commercial Research License; not an official Google detector. The Gemini text detector, by contrast, is Google's official SynthID-text detector when `WATERMARKS_GEMINI_API_KEY` is configured server-side. Claude's detection API has been announced but is not public yet — the `claude-text` detector reports unavailable until it ships.
 - **C2PA soft binding** (content watermark that re-links to a remote manifest after metadata strip) is out of scope — stripping hard-bound C2PA does not clear it.
 - Data-driven / backdoor model marks (trigger phrases) are out of scope.
 

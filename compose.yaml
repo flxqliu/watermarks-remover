@@ -27,6 +27,13 @@ services:
     environment:
       # Empty by default (no auth). Set to require `Authorization: Bearer <key>`.
       WATERMARKS_SERVER_API_KEY: ${WATERMARKS_SERVER_API_KEY:-}
+      # Optional Gemini API key enabling vendor SynthID-text watermark
+      # detection via /detect and detect_before/after (see .env.example).
+      WATERMARKS_GEMINI_API_KEY: ${WATERMARKS_GEMINI_API_KEY:-}
+      WATERMARKS_GEMINI_MODEL: ${WATERMARKS_GEMINI_MODEL:-}
+      # Optional SynthID image scorer sidecar (heavy profile).
+      WATERMARKS_SYNTHID_SCORER_URL: ${WATERMARKS_SYNTHID_SCORER_URL:-}
+      WATERMARKS_SYNTHID_SCORER_API_KEY: ${WATERMARKS_SYNTHID_SCORER_API_KEY:-}
     read_only: true
     tmpfs:
       - /tmp
@@ -106,6 +113,29 @@ services:
       - /tmp
     init: true
     user: "10001:10001"
+    volumes:
+      - synthid-cache:/home/scorer/.cache/huggingface
+
+  # HTTP SynthID scorer sidecar: lets wr-core score images before/after
+  # cleaning without bundling the non-commercial reverse-SynthID code in the
+  # published core image. Reach it via WATERMARKS_SYNTHID_SCORER_URL on
+  # wr-core (see .env.example) and require the same bearer key on both sides.
+  wr-synthid-score:
+    profiles: [heavy]
+    build:
+      context: service
+      dockerfile: Dockerfile.synthid
+    image: watermarks-remover-synthid-scorer:local
+    entrypoint: ["python3"]
+    command: ["/app/synthid_score_server.py", "--host", "0.0.0.0", "--port", "8766"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    user: "10001:10001"
+    environment:
+      WATERMARKS_SYNTHID_SCORER_API_KEY: ${WATERMARKS_SYNTHID_SCORER_API_KEY:-}
+      REVERSE_SYNTHID_DIR: /opt/reverse-synthid
     volumes:
       - synthid-cache:/home/scorer/.cache/huggingface
 
