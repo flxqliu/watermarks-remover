@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import backup_path, cleaned_path, eprint  # noqa: E402
-from image_meta import clean_image  # noqa: E402
+from common import backup_path, cleaned_path, eprint
+from image_meta import clean_image
 
 
 def main() -> int:
@@ -186,10 +186,14 @@ def main() -> int:
             )
         if pr is not None:
             if pr.get("available"):
-                engine = "CtrlRegen" if args.remove_pixel == "ctrlregen" else "DiffusionPurification"
+                engine = (
+                    "CtrlRegen" if args.remove_pixel == "ctrlregen" else "DiffusionPurification"
+                )
                 eprint(f"{engine}: removed on {pr.get('device', 'unknown device')}")
             else:
-                engine = "CtrlRegen" if args.remove_pixel == "ctrlregen" else "DiffusionPurification"
+                engine = (
+                    "CtrlRegen" if args.remove_pixel == "ctrlregen" else "DiffusionPurification"
+                )
                 eprint(f"{engine}: unavailable: {pr.get('error', 'unknown error')}")
         if residual:
             eprint("warning: residual C2PA/AI signals may remain")

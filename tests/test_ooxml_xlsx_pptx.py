@@ -12,7 +12,7 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 
-from container_meta import (  # noqa: E402
+from container_meta import (
     clean_container,
     clean_docx,
     clean_pptx,
@@ -23,8 +23,9 @@ from container_meta import (  # noqa: E402
     inspect_pptx,
     inspect_xlsx,
 )
-from format_dispatch import classify, classify_bytes  # noqa: E402
-from tests.test_clean_image import _minimal_jpeg_with_app11, _minimal_png_with_text  # noqa: E402
+from format_dispatch import classify, classify_bytes
+
+from tests.test_clean_image import _minimal_jpeg_with_app11, _minimal_png_with_text
 
 
 def _create_synthetic_xlsx(
@@ -212,7 +213,7 @@ def test_xlsx_inspect_and_clean():
     xlsx_bytes = _create_synthetic_xlsx()
 
     # Inspect
-    has_c2pa, has_ai, findings, details = inspect_xlsx(xlsx_bytes)
+    has_c2pa, has_ai, findings, _details = inspect_xlsx(xlsx_bytes)
     assert has_c2pa is True
     assert has_ai is True
     assert any("docProps/core.xml" in f for f in findings)
@@ -263,7 +264,7 @@ def test_pptx_inspect_and_clean():
     pptx_bytes = _create_synthetic_pptx()
 
     # Inspect
-    has_c2pa, has_ai, findings, details = inspect_pptx(pptx_bytes)
+    has_c2pa, has_ai, findings, _details = inspect_pptx(pptx_bytes)
     assert has_c2pa is True
     assert has_ai is True
     assert any("docProps/core.xml" in f for f in findings)
@@ -276,7 +277,7 @@ def test_pptx_inspect_and_clean():
     assert any("layer A text:" in a for a in actions)
 
     # Inspect cleaned package
-    has_c2pa_after, has_ai_after, findings_after, _ = inspect_pptx(cleaned_bytes)
+    has_c2pa_after, has_ai_after, _findings_after, _ = inspect_pptx(cleaned_bytes)
     assert has_c2pa_after is False
     assert has_ai_after is False
 
@@ -298,12 +299,18 @@ def test_docx_embedded_media_cleaning():
     # Verify DOCX embedded media (word/media/) is also cleaned
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Doc</w:t></w:r></w:p></w:body></w:document>")
-        zf.writestr("docProps/core.xml", "<cp:coreProperties xmlns:cp='http://schemas.openxmlformats.org/package/2006/metadata/core-properties' xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:creator>Bot</dc:creator></cp:coreProperties>")
+        zf.writestr(
+            "word/document.xml",
+            "<w:document><w:body><w:p><w:r><w:t>Doc</w:t></w:r></w:p></w:body></w:document>",
+        )
+        zf.writestr(
+            "docProps/core.xml",
+            "<cp:coreProperties xmlns:cp='http://schemas.openxmlformats.org/package/2006/metadata/core-properties' xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:creator>Bot</dc:creator></cp:coreProperties>",
+        )
         zf.writestr("word/media/image1.png", _minimal_png_with_text())
 
     docx_data = buf.getvalue()
-    has_c2pa, has_ai, findings, _ = inspect_docx(docx_data)
+    has_c2pa, _has_ai, findings, _ = inspect_docx(docx_data)
     assert has_c2pa is True
     assert any("word/media/image1.png" in f for f in findings)
 

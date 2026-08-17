@@ -11,7 +11,7 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 
-from container_meta import (  # noqa: E402
+from container_meta import (
     clean_html,
     clean_markdown,
     clean_svg,
@@ -19,7 +19,8 @@ from container_meta import (  # noqa: E402
     inspect_markdown,
     inspect_svg,
 )
-from tests.test_clean_image import _minimal_jpeg_with_app11, _minimal_png_with_text  # noqa: E402
+
+from tests.test_clean_image import _minimal_jpeg_with_app11, _minimal_png_with_text
 
 
 def test_svg_embedded_png_c2pa_cleaned():
@@ -28,7 +29,7 @@ def test_svg_embedded_png_c2pa_cleaned():
 
     svg_data = f"""<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
   <image width="100" height="100" xlink:href="data:image/png;base64,{png_b64}" />
-</svg>""".encode("utf-8")
+</svg>""".encode()
 
     # Inspect
     has_c2pa, has_ai, findings, _ = inspect_svg(svg_data)
@@ -41,7 +42,7 @@ def test_svg_embedded_png_c2pa_cleaned():
     assert any("cleaned embedded data:image/png" in a for a in actions)
 
     # Re-inspect
-    has_c2pa_after, has_ai_after, findings_after, _ = inspect_svg(cleaned_bytes)
+    has_c2pa_after, has_ai_after, _findings_after, _ = inspect_svg(cleaned_bytes)
     assert has_c2pa_after is False
     assert has_ai_after is False
     assert b"c2pa" not in cleaned_bytes.lower()
@@ -55,7 +56,7 @@ def test_svg_embedded_base64_with_newlines():
 
     svg_data = f"""<svg xmlns="http://www.w3.org/2000/svg">
   <image href="data:image/png;base64,{multiline_b64}" />
-</svg>""".encode("utf-8")
+</svg>""".encode()
 
     cleaned_bytes, actions = clean_svg(svg_data)
     assert any("cleaned embedded data:image/png" in a for a in actions)
@@ -106,7 +107,7 @@ Here is an image:
 ![diagram](data:image/png;base64,{png_b64})
 """
 
-    has_c2pa, has_ai, findings, _ = inspect_markdown(md_text)
+    has_c2pa, _has_ai, findings, _ = inspect_markdown(md_text)
     assert has_c2pa is True
     assert any("embedded data:image/png" in f for f in findings)
 
@@ -135,7 +136,7 @@ def test_already_clean_embedded_image_no_op():
 def test_corrupted_data_uri_graceful_fallback():
     # Corrupted base64 that shouldn't crash the file cleaner
     bad_html = '<img src="data:image/png;base64,!!!NOT_VALID_BASE64###">'
-    cleaned_text, actions = clean_html(bad_html)
+    cleaned_text, _actions = clean_html(bad_html)
     assert cleaned_text == bad_html
 
 
@@ -145,9 +146,11 @@ def test_nested_svg_data_uri_cleaned():
 
     parent_html = f'<img src="data:image/svg+xml;base64,{nested_b64}">'
 
-    has_c2pa, has_ai, findings, _ = inspect_html(parent_html)
+    _has_c2pa, has_ai, _findings, _ = inspect_html(parent_html)
     assert has_ai is True
 
     cleaned_html, actions = clean_html(parent_html)
     assert any("cleaned embedded data:image/svg+xml" in a for a in actions)
-    assert "DALL-E" not in base64.b64decode(cleaned_html.split("base64,")[1].split('"')[0]).decode("utf-8")
+    assert "DALL-E" not in base64.b64decode(cleaned_html.split("base64,")[1].split('"')[0]).decode(
+        "utf-8"
+    )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -36,10 +37,8 @@ def _reconfigure_stream(stream: Any, errors: str) -> None:
     """
     reconfigure = getattr(stream, "reconfigure", None)
     if reconfigure is not None:
-        try:
+        with contextlib.suppress(OSError, ValueError):
             reconfigure(encoding="utf-8", errors=errors)
-        except (OSError, ValueError):
-            pass
 
 
 def _configure_stdio() -> None:
@@ -261,10 +260,8 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
             os.fsync(f.fileno())
         os.replace(tmp_name, dest)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_name)
-        except OSError:
-            pass
         raise
 
 
@@ -284,7 +281,7 @@ def backup_path(src: Path) -> Path:
         safe_write_bytes(bak, src.read_bytes())
     except OSError as e:
         eprint(f"cannot create backup {bak}: {e}")
-        raise SystemExit(2)
+        raise SystemExit(2) from None
     return bak
 
 
