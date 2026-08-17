@@ -330,12 +330,16 @@ NOAI_WATERMARK_DIR=~/noai-watermark \
 
 On Windows use `setup_ctrlregen.ps1` (same flags as `-Dir`, `-Ref`, `-Python`);
 the venv lands in `.venv\Scripts\`, which `clean_image.py` already resolves.
-It picks the torch wheel index from the GPU's **compute capability** rather
-than the CUDA version `nvidia-smi` prints — that number is the maximum the
-*driver* supports, and drivers are backward compatible, so deriving the wheel
-tag from it installs `cu130` on a Pascal card whose kernels were dropped in
-`cu128`. The script forces `cu126` below compute capability 7.5 and then
-verifies the result with `torch.cuda.get_arch_list()`.
+It probes the published PyTorch wheel indices and picks the highest one at or
+below the CUDA version `nvidia-smi` prints that actually exists — that number
+is the maximum the *driver* supports, and drivers are backward compatible, so a
+driver reporting 13.1 (no published `cu131`) installs `cu130`. Below compute
+capability 7.5 it forces `cu126`, the last index whose wheels still carry
+Maxwell/Pascal/Volta kernels. It installs `torch` **and** `torchvision`
+together from that index so the dependency install cannot swap them for CPU
+builds from PyPI, then verifies after install that `torch.cuda.is_available()`
+is true — if a GPU was detected but torch ends up CPU-only, the script warns
+loudly and exits non-zero instead of pretending the setup succeeded.
 
 ### From `clean_image.py`
 
