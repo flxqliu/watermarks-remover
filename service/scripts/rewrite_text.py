@@ -378,6 +378,7 @@ def rewrite(
     else:
         info["candidates"] = n
         out, scores = _select_candidate(text, outs)
+        selected_idx = max(range(len(outs)), key=lambda i: scores[i])
         trigger = markllm_scheme is not None or bool(
             os.environ.get("WATERMARKS_GEMINI_API_KEY", "").strip()
         )
@@ -388,7 +389,7 @@ def rewrite(
                 {
                     "lexical_divergence": _lexical_divergence(text, cand),
                     "selection_score": scores[i],
-                    "selected": cand == out,
+                    "selected": i == selected_idx,
                     "detections": detections[i] if trigger else [],
                 }
             )

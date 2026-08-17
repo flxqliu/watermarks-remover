@@ -163,6 +163,32 @@ def _two_candidates(monkeypatch):
     monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
 
 
+def test_duplicate_candidates_mark_only_one_selected(monkeypatch):
+    monkeypatch.delenv("WATERMARKS_GEMINI_API_KEY", raising=False)
+
+    texts = iter(
+        [
+            "alpha beta gamma delta",
+            "alpha beta gamma delta",
+        ]
+    )
+    monkeypatch.setattr(
+        rewrite_text,
+        "call_ollama",
+        lambda *a, **k: next(texts),
+    )
+
+    out, info = rewrite(
+        "the cat sat on the mat",
+        **_rewrite_candidates_kwargs(),
+    )
+
+    assert out == "alpha beta gamma delta"
+
+    selected = [entry["selected"] for entry in info["candidate_scores"]]
+    assert selected == [True, False]
+
+
 def test_candidate_scores_restructured_with_detections(monkeypatch):
     monkeypatch.setattr(rewrite_text, "MarkLLMTextDetector", _FakeMarkLLM)
     calls: list = []
