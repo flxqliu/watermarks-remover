@@ -1240,6 +1240,17 @@ def _synthid_score_http(
     return payload
 
 
+def _synthid_python(upstream: Path) -> str:
+    """Prefer the checkout venv so the scorer deps (cv2, sklearn) are importable."""
+    if os.name == "nt":
+        venv = upstream / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv = upstream / ".venv" / "bin" / "python"
+    if venv.is_file():
+        return str(venv)
+    return sys.executable
+
+
 def run_synthid_score(
     path: Path,
     upstream_dir: str | None = None,
@@ -1248,8 +1259,9 @@ def run_synthid_score(
 
     Uses the HTTP sidecar when WATERMARKS_SYNTHID_SCORER_URL is set,
     otherwise a subprocess against a local checkout. Returns None when the
-    scorer is not configured or unavailable (exit 3), so callers can keep
-    the default "no SynthID score" behavior.
+    scorer is not configured; a dict with "available": False and an "error"
+    when it is configured but unavailable (e.g. exit 3), so callers can
+    distinguish "not scored" from "scored and clean".
     """
     scorer_url = os.environ.get("WATERMARKS_SYNTHID_SCORER_URL", "").strip()
     if scorer_url:
@@ -1266,7 +1278,7 @@ def run_synthid_score(
 
     script = SCRIPTS_DIR / "score_synthid.py"
     cmd = [
-        sys.executable,
+        _synthid_python(Path(upstream_dir)),
         str(script),
         str(path),
         "--upstream-dir",
@@ -1286,7 +1298,10 @@ def run_synthid_score(
         return {"available": False, "error": str(e)}
 
     if r.returncode == 3:
-        return None
+        return {
+            "available": False,
+            "error": (r.stderr or "SynthID scorer unavailable (exit 3)").strip()[:2000],
+        }
     if r.returncode != 0:
         return {"available": False, "error": (r.stderr or "").strip()[:2000]}
     try:
