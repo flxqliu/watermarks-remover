@@ -462,9 +462,13 @@ class Handler(BaseHTTPRequestHandler):
             options = {}
         if not isinstance(options, dict):
             raise ValueError("'options' must be an object")
-        for key in options:
+        for key, value in options.items():
             if key not in ALLOWED_CLEAN_OPTIONS:
                 raise ValueError(f"unknown option: {key}")
+            expected_type = ALLOWED_CLEAN_OPTIONS[key]
+            if not isinstance(value, expected_type):
+                type_name = "boolean" if expected_type is bool else "string"
+                raise ValueError(f"option {key!r} must be a {type_name}")
 
         with tempfile.TemporaryDirectory(prefix="wm-clean-") as tmp:
             tmpdir = Path(tmp)

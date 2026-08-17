@@ -86,14 +86,14 @@ clients.
 
 ```bash
 curl -s -X POST "$WM/inspect" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 notes.md)\", \"name\": \"notes.md\"}"
+  -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
 **Clean** (text / image / container are auto-detected by name + bytes):
 
 ```bash
 curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 notes.md)\", \"name\": \"notes.md\"}"
+  -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
 Decode the returned `cleaned` base64 into the output file (`*.cleaned.*` by
@@ -126,7 +126,7 @@ mostly just send the file.
 
 ```bash
 curl -s -X POST "$WM/inspect" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 path)\", \"name\": \"$(basename path)\"}"
+  -d "{\"file\": \"$(base64 < path | tr -d '\n')\", \"name\": \"$(basename path)\"}"
 ```
 
 Show a short summary (suspicious codepoints; C2PA/AI flags; confidence labels
@@ -144,7 +144,7 @@ local detector is an official vendor detector.
 
 ```bash
 curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 INPUT)\", \"name\": \"$(basename INPUT)\"}"
+  -d "{\"file\": \"$(base64 < INPUT | tr -d '\n')\", \"name\": \"$(basename INPUT)\"}"
 ```
 
 Decode `cleaned` → `OUTPUT` (`*.cleaned.*` unless the user asked in-place).
@@ -158,7 +158,7 @@ says the backend is present:
 
 ```bash
 curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 shot.png)\", \"name\": \"shot.png\", \
+  -d "{\"file\": \"$(base64 < shot.png | tr -d '\n')\", \"name\": \"shot.png\", \
        \"options\": {\"remove_pixel\": \"ctrlregen\"}}"
 ```
 

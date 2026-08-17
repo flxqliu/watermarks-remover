@@ -164,7 +164,7 @@ WM="http://127.0.0.1:8765"
 curl -s "$WM/health"                       # {"ok": true, "version": "..."}
 curl -s "$WM/openapi.json"                 # machine-readable OpenAPI 3.0.3 contract
 curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 notes.md)\", \"name\": \"notes.md\"}"
+  -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
 The service routes by filename extension then magic bytes, so text / image / container are auto-detected. Set `WATERMARKS_SERVER_API_KEY` to require `Authorization: Bearer <key>` on every request. Loopback-only bind by default (`--host` to override); intended for a trusted network.
@@ -217,7 +217,7 @@ Checks `wr-core` via `GET /health` and runs each harness/heavy service with `--h
 ```bash
 echo "Hello\u200bWorld\u00ad!" > /tmp/sample.txt
 curl -s -X POST http://127.0.0.1:8765/clean -H 'Content-Type: application/json' \
-  -d "{\"file\": \"$(base64 -w0 /tmp/sample.txt)\", \"name\": \"sample.txt\"}"
+  -d "{\"file\": \"$(base64 < /tmp/sample.txt | tr -d '\n')\", \"name\": \"sample.txt\"}"
 ```
 
 Everything else is optional and lives in a `.env` file at the repo root. `docker compose` **auto-loads `.env`** and interpolates the `${VAR}` references in `compose.yaml` from it (shell exports win over `.env` if both are set).
