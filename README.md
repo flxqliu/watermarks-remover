@@ -484,6 +484,39 @@ MARKLLM_DIR=~/MarkLLM \
     --markllm-scheme kgw --markllm-dir "$HOME/MarkLLM" --json-stats
 ```
 
+**Per-candidate detection:** when `--candidates N` (`N > 1`) is combined with
+`--markllm-scheme` (or with `WATERMARKS_GEMINI_API_KEY` set), every generated
+candidate is run through the configured text detectors and `--json-stats`
+reports per-candidate measurements. Candidate selection stays purely lexical;
+the detections exist so you can see whether divergence actually correlates with
+watermark removal:
+
+```json
+"candidate_scores": [
+  {
+    "lexical_divergence": 0.91,
+    "selection_score": 0.91,
+    "selected": true,
+    "detections": [
+      {"detector": "markllm", "available": true, "scheme": "kgw",
+       "is_watermarked": true, "score": 4.3, "threshold": 3.0}
+    ]
+  },
+  {
+    "lexical_divergence": 0.84,
+    "selection_score": 0.84,
+    "selected": false,
+    "detections": [
+      {"detector": "markllm", "available": true, "scheme": "kgw",
+       "is_watermarked": false, "score": 1.7, "threshold": 3.0}
+    ]
+  }
+]
+```
+
+A detector that is unconfigured, times out, or errors yields an
+`"available": false` entry with an `error` reason and never fails the rewrite.
+
 If the backend is unconfigured or its deps are missing, the rewrite proceeds
 and the report notes verification was unavailable. A GPU is recommended; CPU
 runs work but are slow, and the model download is a few GB.
@@ -495,8 +528,8 @@ Hardening knobs:
   Custom remote code is never executed (transformers `trust_remote_code` is
   never enabled).
 - `WATERMARKS_MARKLLM_RLIMIT_AS=<bytes>` (env, POSIX) applies an address-space
-  limit to the MarkLLM subprocess spawned by `rewrite_text.py`. Off by default
-  because torch/CUDA usually needs large address spaces.
+  limit to the MarkLLM detector subprocess. Off by default because torch/CUDA
+  usually needs large address spaces.
 - Config files are capped at 1 MiB; the upstream checkout and the base image
   are pinned by SHA/digest.
 
@@ -757,7 +790,7 @@ make smoke                          # quick CLI smoke on fixtures
 **MarkLLM text-watermark harness (optional)**
 
 - New optional harness (external `THU-BPM/MarkLLM` checkout, Apache-2.0): `detect_text_watermark.py` with `detect` / `watermark` subcommands for KGW and SynthID schemes
-- `rewrite_text.py --markllm-scheme` runs before/after detection around a Layer B rewrite (env-gated; reports `cleared`)
+- `rewrite_text.py --markllm-scheme` runs before/after detection around a Layer B rewrite and per-candidate detection when `--candidates N>1` (env-gated; reports `cleared`)
 - `setup_markllm.sh` bootstrap + `requirements-markllm.txt` (pinned deps) + `Dockerfile.markllm` and Makefile `bootstrap-markllm` / `smoke-markllm` / `docker-markllm-build` / `docker-markllm-help`
 - Hardening: `--offline` cache-only model loading (no HF egress, no remote code), 1 MiB config cap, optional `WATERMARKS_MARKLLM_RLIMIT_AS` on the rewrite subprocess, pinned torch in the Dockerfile, and clone-SHA verification in `Dockerfile.markllm`
 - Mock-based tests (`tests/test_markllm_detect.py`, 21 cases) — no torch in CI; verification-harness caveat (same-config-only, not a vendor-detector oracle) documented in README, SKILL.md, `removal-matrix.md`, `vendor-notes.md`

@@ -37,6 +37,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -267,18 +268,72 @@ class GeminiSynthIDTextDetector:
 # ---------------------------------------------------------------------------
 
 
+def _venv_python(upstream: Path) -> Path | None:
+    """Prefer the MarkLLM checkout's venv interpreter, if it exists."""
+    if os.name == "nt":
+        candidate = upstream / ".venv" / "Scripts" / "python.exe"
+    else:
+        candidate = upstream / ".venv" / "bin" / "python"
+    return candidate if candidate.is_file() else None
+
+
+def _markllm_preexec() -> Callable[[], None] | None:
+    """Optional RLIMIT_AS guard for the MarkLLM child; None means "no limit".
+
+    torch/CUDA usually needs large address spaces, so this is opt-in via
+    WATERMARKS_MARKLLM_RLIMIT_AS (byte count, hex/octal allowed). POSIX only;
+    on Windows preexec_fn must stay None.
+    """
+    raw = os.environ.get("WATERMARKS_MARKLLM_RLIMIT_AS")
+    if not raw or os.name != "posix":
+        return None
+    try:
+        limit = int(raw, 0)
+    except ValueError:
+        return None
+
+    def _apply() -> None:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+
+    return _apply
+
+
 class MarkLLMTextDetector:
-    """Same-config-only research detection via detect_text_watermark.py."""
+    """Same-config-only research detection via detect_text_watermark.py.
+
+    Constructor overrides (scheme, upstream_dir, model, timeout) take
+    precedence over the environment, so callers such as rewrite_text.py can
+    keep CLI flags driving the harness. When the MarkLLM checkout has a
+    venv, its interpreter runs the child process; otherwise the current
+    interpreter is used (the service image bundles the harness deps).
+    """
 
     name = "markllm"
 
+    def __init__(
+        self,
+        *,
+        scheme: str | None = None,
+        upstream_dir: str | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self._scheme = scheme
+        self._upstream_dir = upstream_dir
+        self._model = model
+        self._timeout = timeout
+
     def available(self) -> bool:
-        return bool(os.environ.get("MARKLLM_DIR", "").strip())
+        upstream = self._upstream_dir or os.environ.get("MARKLLM_DIR", "").strip()
+        return bool(upstream)
 
     def detect(self, text: str) -> dict[str, Any]:
-        upstream = os.environ.get("MARKLLM_DIR", "").strip()
+        upstream = self._upstream_dir or os.environ.get("MARKLLM_DIR", "").strip()
         scheme = (
-            os.environ.get("WATERMARKS_MARKLLM_SCHEME", DEFAULT_MARKLLM_SCHEME)
+            self._scheme
+            or os.environ.get("WATERMARKS_MARKLLM_SCHEME", "")
             or DEFAULT_MARKLLM_SCHEME
         )
         report: dict[str, Any] = {
@@ -292,26 +347,32 @@ class MarkLLMTextDetector:
             return report
 
         script = Path(__file__).resolve().parent / "detect_text_watermark.py"
-        timeout = _env_float("WATERMARKS_MARKLLM_TIMEOUT", DEFAULT_MARKLLM_TIMEOUT)
+        timeout = (
+            self._timeout
+            if self._timeout is not None
+            else _env_float("WATERMARKS_MARKLLM_TIMEOUT", DEFAULT_MARKLLM_TIMEOUT)
+        )
+        venv_python = _venv_python(Path(upstream).expanduser().resolve())
+        python = str(venv_python) if venv_python is not None else sys.executable
 
         with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as f:
             f.write(text)
             tmp = f.name
+
+        cmd = [python, str(script), "detect", tmp, "--scheme", scheme, "--json"]
+        if self._model:
+            cmd += ["--model", self._model]
+        if self._upstream_dir:
+            cmd += ["--upstream-dir", str(Path(upstream).expanduser().resolve())]
+
         try:
             try:
                 r = subprocess.run(
-                    [
-                        sys.executable,
-                        str(script),
-                        "detect",
-                        tmp,
-                        "--scheme",
-                        scheme,
-                        "--json",
-                    ],
+                    cmd,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
+                    preexec_fn=_markllm_preexec(),
                     check=False,
                 )
             except subprocess.TimeoutExpired:
@@ -382,8 +443,14 @@ class ClaudeTextDetector:
 # ---------------------------------------------------------------------------
 
 
-def all_detectors() -> list[TextDetector]:
-    return [GeminiSynthIDTextDetector(), MarkLLMTextDetector(), ClaudeTextDetector()]
+def all_detectors(
+    markllm: MarkLLMTextDetector | None = None, *, include_markllm: bool = True
+) -> list[TextDetector]:
+    detectors: list[TextDetector] = [GeminiSynthIDTextDetector()]
+    if include_markllm:
+        detectors.append(markllm or MarkLLMTextDetector())
+    detectors.append(ClaudeTextDetector())
+    return detectors
 
 
 def detector_status() -> dict[str, bool]:
@@ -391,11 +458,30 @@ def detector_status() -> dict[str, bool]:
     return {d.name: d.available() for d in all_detectors()}
 
 
-def run_all_text_detectors(text: str) -> list[dict[str, Any]]:
-    """Run every detector (including unavailable ones, with reasons)."""
-    return [d.detect(text) for d in all_detectors()]
+def run_all_text_detectors(
+    text: str,
+    *,
+    markllm: MarkLLMTextDetector | None = None,
+    include_markllm: bool = True,
+) -> list[dict[str, Any]]:
+    """Run every detector (including unavailable ones, with reasons).
+
+    markllm injects a caller-parameterized MarkLLM detector (e.g. one
+    driven by rewrite_text.py CLI flags); pass include_markllm=False to
+    exclude the MarkLLM harness entirely.
+    """
+    return [d.detect(text) for d in all_detectors(markllm, include_markllm=include_markllm)]
 
 
-def run_text_detectors(text: str) -> list[dict[str, Any]]:
+def run_text_detectors(
+    text: str,
+    *,
+    markllm: MarkLLMTextDetector | None = None,
+    include_markllm: bool = True,
+) -> list[dict[str, Any]]:
     """Run only the detectors that are configured and usable."""
-    return [d.detect(text) for d in all_detectors() if d.available()]
+    return [
+        d.detect(text)
+        for d in all_detectors(markllm, include_markllm=include_markllm)
+        if d.available()
+    ]

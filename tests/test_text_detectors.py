@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -217,6 +218,134 @@ def test_markllm_scheme_env(monkeypatch):
     text_detectors.MarkLLMTextDetector().detect("hello")
     assert "--scheme" in seen["argv"]
     assert seen["argv"][seen["argv"].index("--scheme") + 1] == "synthid"
+
+
+def test_markllm_prefers_checkout_venv(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    if os.name == "nt":
+        venv_python = upstream / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = upstream / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("")
+    (upstream / "watermark").mkdir()
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["argv"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}")
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream))
+    assert det.available() is True
+    det.detect("hello")
+    assert seen["argv"][0] == str(venv_python)
+
+
+def test_markllm_falls_back_to_sys_executable(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    (upstream / "watermark").mkdir()
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["argv"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}")
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream))
+    det.detect("hello")
+    assert seen["argv"][0] == sys.executable
+
+
+def test_markllm_ctor_overrides_passed_to_adapter(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    (upstream / "watermark").mkdir()
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["argv"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}")
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    det = text_detectors.MarkLLMTextDetector(
+        scheme="synthid",
+        upstream_dir=str(upstream),
+        model="opt-1.3b",
+        timeout=5,
+    )
+    det.detect("hello")
+    argv = seen["argv"]
+    assert argv[argv.index("--scheme") + 1] == "synthid"
+    assert argv[argv.index("--model") + 1] == "opt-1.3b"
+    assert argv[argv.index("--upstream-dir") + 1] == str(upstream.resolve())
+
+
+def test_markllm_ctor_available_with_override(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream))
+    assert det.available() is True
+
+
+def test_markllm_preexec_default_off(monkeypatch):
+    monkeypatch.delenv("WATERMARKS_MARKLLM_RLIMIT_AS", raising=False)
+    assert text_detectors._markllm_preexec() is None
+
+
+def test_markllm_preexec_env(monkeypatch):
+    if os.name != "posix":
+        pytest.skip("preexec_fn is POSIX-only")
+    monkeypatch.setenv("WATERMARKS_MARKLLM_RLIMIT_AS", "0x40000000")
+    assert callable(text_detectors._markllm_preexec())
+
+
+def test_markllm_detect_applies_rlimit(monkeypatch, tmp_path):
+    if os.name != "posix":
+        pytest.skip("preexec_fn is POSIX-only")
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    (upstream / "watermark").mkdir()
+    monkeypatch.setenv("WATERMARKS_MARKLLM_RLIMIT_AS", "1073741824")
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["preexec_fn"] = kwargs.get("preexec_fn")
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"available": true}')
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream))
+    report = det.detect("hello")
+    assert report["available"] is True
+    assert callable(captured["preexec_fn"])
+
+
+def test_run_all_text_detectors_can_exclude_markllm(monkeypatch):
+    monkeypatch.setattr(
+        text_detectors,
+        "MarkLLMTextDetector",
+        lambda: pytest.fail("must not construct MarkLLM when excluded"),
+    )
+    reports = text_detectors.run_all_text_detectors("hello", include_markllm=False)
+    assert len(reports) == 2  # gemini (unconfigured) + claude placeholder
+    assert {r["detector"] for r in reports} == {"gemini-synthid-text", "claude-text"}
+
+
+def test_run_all_text_detectors_injects_markllm_instance(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream), scheme="synthid")
+    seen: list = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}")
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    text_detectors.run_all_text_detectors("hello", markllm=det)
+    markllm_cmd = next(c for c in seen if "--scheme" in c)
+    assert markllm_cmd[markllm_cmd.index("--scheme") + 1] == "synthid"
 
 
 # --- Claude placeholder ----------------------------------------------------
