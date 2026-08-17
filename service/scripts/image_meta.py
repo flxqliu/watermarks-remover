@@ -13,7 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from common import classify_finding_confidence, safe_arg, safe_write_bytes, subprocess_preexec_fn, which
+from common import (
+    classify_finding_confidence,
+    safe_arg,
+    safe_write_bytes,
+    subprocess_preexec_fn,
+    which,
+)
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -30,7 +36,9 @@ def ctrlregen_preexec_fn() -> None:
         import resource
 
         resource.setrlimit(resource.RLIMIT_AS, (_CTRLREGEN_RLIMIT_AS, _CTRLREGEN_RLIMIT_AS))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (_CTRLREGEN_RLIMIT_FSIZE, _CTRLREGEN_RLIMIT_FSIZE))
+        resource.setrlimit(
+            resource.RLIMIT_FSIZE, (_CTRLREGEN_RLIMIT_FSIZE, _CTRLREGEN_RLIMIT_FSIZE)
+        )
     except (ImportError, OSError, ValueError):
         pass
 
@@ -94,9 +102,7 @@ class ImageInspectReport:
             "has_c2pa": self.has_c2pa,
             "has_ai_metadata": self.has_ai_metadata,
             "findings": self.findings,
-            "findings_confidence": [
-                classify_finding_confidence(f) for f in self.findings
-            ],
+            "findings_confidence": [classify_finding_confidence(f) for f in self.findings],
             "tools": self.tools,
             "synthid": self.synthid,
             "notes": self.notes,
@@ -113,9 +119,9 @@ def detect_format(data: bytes) -> str:
     if len(data) >= 12 and data[4:8] == b"ftyp":
         box_size = struct.unpack(">I", data[0:4])[0]
         header_chunk = (
-            data[8:min(box_size, len(data), 64)]
+            data[8 : min(box_size, len(data), 64)]
             if box_size >= 8
-            else data[8:min(len(data), 64)]
+            else data[8 : min(len(data), 64)]
         )
         if any(b in header_chunk for b in (b"avif", b"avis", b"avio")):
             return "avif"
@@ -221,8 +227,7 @@ def inspect_jpeg(data: bytes) -> tuple[bool, bool, list[str]]:
             if hits:
                 has_ai = True
                 if any(
-                    h.lower() in ("c2pa", "contentcredentials", "jumb", "contentauth")
-                    for h in hits
+                    h.lower() in ("c2pa", "contentcredentials", "jumb", "contentauth") for h in hits
                 ):
                     has_c2pa = True
                 findings.append(f"JPEG APP{marker - 0xE0}: {', '.join(hits[:8])}")
@@ -241,9 +246,7 @@ def _webp_chunks(data: bytes) -> tuple[list[tuple[bytes, bytes, bytes]], list[st
     notes: list[str] = []
     declared_size = struct.unpack("<I", data[4:8])[0]
     if declared_size + 8 != len(data):
-        notes.append(
-            f"RIFF size mismatch: header={declared_size + 8} actual={len(data)}"
-        )
+        notes.append(f"RIFF size mismatch: header={declared_size + 8} actual={len(data)}")
 
     chunks: list[tuple[bytes, bytes, bytes]] = []
     pos = 12
@@ -257,9 +260,7 @@ def _webp_chunks(data: bytes) -> tuple[list[tuple[bytes, bytes, bytes]], list[st
             name = fourcc.decode("latin-1", errors="replace")
             notes.append(f"truncated WebP chunk {name}")
             break
-        chunks.append(
-            (fourcc, data[payload_start:payload_end], data[payload_end:padded_end])
-        )
+        chunks.append((fourcc, data[payload_start:payload_end], data[payload_end:padded_end]))
         pos = padded_end
     if pos != len(data) and not any("truncated" in note for note in notes):
         notes.append(f"trailing WebP bytes: {len(data) - pos}")
@@ -351,8 +352,7 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                 else:
                     findings.append(f"{fmt.upper()} XMP uuid box")
                 if any(
-                    h.lower() in ("c2pa", "contentcredentials", "jumb", "contentauth")
-                    for h in hits
+                    h.lower() in ("c2pa", "contentcredentials", "jumb", "contentauth") for h in hits
                 ):
                     has_c2pa = True
             else:
@@ -360,10 +360,7 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                 if hits:
                     has_ai = True
                     findings.append(f"{fmt.upper()} uuid box: {', '.join(hits[:8])}")
-                    if any(
-                        h.lower() in ("c2pa", "contentcredentials", "jumb")
-                        for h in hits
-                    ):
+                    if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                         has_c2pa = True
         elif fourcc == b"meta":
             meta_sub = _parse_isobmff_boxes(payload, start=4)
@@ -371,25 +368,16 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                 s_name = s_fourcc.decode("latin-1", errors="replace")
                 if s_fourcc in (b"jumb", b"c2pa") or s_name.lower().startswith("c2"):
                     has_c2pa = True
-                    findings.append(
-                        f"{fmt.upper()} meta sub-box {s_name} (C2PA/JUMBF container)"
-                    )
+                    findings.append(f"{fmt.upper()} meta sub-box {s_name} (C2PA/JUMBF container)")
                 elif s_fourcc == b"uuid":
                     if s_payload.startswith(XMP_UUID):
                         has_ai = True
-                        hits = _contains_any(
-                            s_payload[16:], AI_META_HINTS + C2PA_MARKERS
-                        )
+                        hits = _contains_any(s_payload[16:], AI_META_HINTS + C2PA_MARKERS)
                         if hits:
-                            findings.append(
-                                f"{fmt.upper()} meta XMP uuid: {', '.join(hits[:8])}"
-                            )
+                            findings.append(f"{fmt.upper()} meta XMP uuid: {', '.join(hits[:8])}")
                         else:
                             findings.append(f"{fmt.upper()} meta XMP uuid box")
-                        if any(
-                            h.lower() in ("c2pa", "contentcredentials", "jumb")
-                            for h in hits
-                        ):
+                        if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                             has_c2pa = True
                     else:
                         hits = _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS)
@@ -400,14 +388,9 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                     hits = _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS)
                     if hits:
                         has_ai = True
-                        if any(
-                            h.lower() in ("c2pa", "contentcredentials", "jumb")
-                            for h in hits
-                        ):
+                        if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                             has_c2pa = True
-                        findings.append(
-                            f"{fmt.upper()} meta/{s_name}: {', '.join(hits[:8])}"
-                        )
+                        findings.append(f"{fmt.upper()} meta/{s_name}: {', '.join(hits[:8])}")
 
     whole = _contains_any(data, C2PA_MARKERS)
     if whole and not has_c2pa:
@@ -428,6 +411,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 text=True,
                 timeout=30,
                 preexec_fn=subprocess_preexec_fn,
+                check=False,
             )
             out = (r.stdout or "") + (r.stderr or "")
             low = out.lower()
@@ -440,9 +424,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 "available": True,
                 "returncode": r.returncode,
                 "snippet": out[:2000],
-                "has_manifest": (
-                    "claim" in low or "c2pa" in low or "manifest" in low
-                )
+                "has_manifest": ("claim" in low or "c2pa" in low or "manifest" in low)
                 and not no_manifest,
             }
         except Exception as e:
@@ -459,6 +441,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 text=True,
                 timeout=30,
                 preexec_fn=subprocess_preexec_fn,
+                check=False,
             )
             out = r.stdout or ""
             interesting = [
@@ -511,6 +494,7 @@ def run_synthid_score(
             text=True,
             timeout=180,
             preexec_fn=subprocess_preexec_fn,
+            check=False,
         )
     except Exception as e:
         return {"available": False, "error": str(e)}
@@ -569,9 +553,7 @@ def run_markdiffusion_purify(
     if upstream_dir is None:
         upstream_dir = os.environ.get("MARKDIFFUSION_DIR")
 
-    upstream = (
-        Path(upstream_dir).expanduser().resolve() if upstream_dir else None
-    )
+    upstream = Path(upstream_dir).expanduser().resolve() if upstream_dir else None
     if upstream is not None and not upstream.is_dir():
         return {
             "available": False,
@@ -608,6 +590,7 @@ def run_markdiffusion_purify(
             text=True,
             timeout=timeout,
             preexec_fn=ctrlregen_subprocess_preexec_fn,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {
@@ -686,6 +669,7 @@ def run_ctrlregen_clean(
             text=True,
             timeout=timeout,
             preexec_fn=ctrlregen_subprocess_preexec_fn,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {"available": False, "error": f"CtrlRegen timed out after {timeout}s"}
@@ -717,9 +701,7 @@ def inspect_image(
     elif fmt in ("avif", "heic"):
         has_c2pa, has_ai, findings = inspect_isobmff(data, fmt)
     else:
-        has_c2pa, has_ai, findings = False, False, [
-            "unsupported format (PNG/JPEG/WebP/AVIF/HEIC)"
-        ]
+        has_c2pa, has_ai, findings = False, False, ["unsupported format (PNG/JPEG/WebP/AVIF/HEIC)"]
 
     notes: list[str] = []
     if fmt == "unknown":
@@ -835,7 +817,6 @@ def strip_jpeg(data: bytes, *, strip_all_app: bool = True) -> tuple[bytes, list[
             seglen = struct.unpack(">H", data[i : i + 2])[0]
             # Find EOI from here carefully: after SOS segment header, scan for FF D9
             # not preceded by stuffed FF 00 issues — simple approach: copy from FF DA to end
-            sos_start = i - 2  # points at 0xFF before marker... actually marker already consumed
             # Reconstruct: FF DA + rest of file
             out.extend(b"\xff\xda")
             out.extend(data[i:])
@@ -899,9 +880,7 @@ def strip_webp(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
     for fourcc, payload, padding in chunks:
         drop = fourcc.upper() == b"C2PA"
         if fourcc in metadata_flags:
-            drop = strip_all_metadata or bool(
-                _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
-            )
+            drop = strip_all_metadata or bool(_contains_any(payload, AI_META_HINTS + C2PA_MARKERS))
         if drop:
             name = fourcc.decode("latin-1", errors="replace")
             actions.append(f"drop WebP chunk {name}")
@@ -911,12 +890,13 @@ def strip_webp(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
 
     body = bytearray(WEBP_SIG)
     for fourcc, payload, padding in kept:
-        if fourcc == b"VP8X" and len(payload) >= 1 and removed_flags:
-            payload = bytes([payload[0] & ~removed_flags]) + payload[1:]
+        chunk = payload
+        if fourcc == b"VP8X" and len(chunk) >= 1 and removed_flags:
+            chunk = bytes([chunk[0] & ~removed_flags]) + chunk[1:]
         body.extend(fourcc)
-        body.extend(struct.pack("<I", len(payload)))
-        body.extend(payload)
-        body.extend(padding if len(payload) & 1 else b"")
+        body.extend(struct.pack("<I", len(chunk)))
+        body.extend(chunk)
+        body.extend(padding if len(chunk) & 1 else b"")
 
     if not actions:
         actions.append("no WebP metadata chunks removed (already clean or none matched)")
@@ -933,7 +913,7 @@ def strip_isobmff(
     actions: list[str] = []
     out = bytearray()
 
-    for fourcc, payload, size, header_size in boxes:
+    for fourcc, payload, _size, _header_size in boxes:
         name = fourcc.decode("latin-1", errors="replace")
         if fourcc in (b"jumb", b"c2pa") or name.lower().startswith("c2"):
             actions.append(f"drop top-level {name} box (C2PA/JUMBF)")
@@ -951,7 +931,7 @@ def strip_isobmff(
             meta_verflags = payload[:4] if len(payload) >= 4 else b"\x00\x00\x00\x00"
             sub_boxes = _parse_isobmff_boxes(payload, start=4)
             clean_sub = bytearray()
-            for s_fourcc, s_payload, s_size, s_hdr in sub_boxes:
+            for s_fourcc, s_payload, _s_size, _s_hdr in sub_boxes:
                 s_name = s_fourcc.decode("latin-1", errors="replace")
                 if s_fourcc in (b"jumb", b"c2pa") or s_name.lower().startswith("c2"):
                     actions.append(f"drop meta sub-box {s_name} (C2PA/JUMBF)")
@@ -960,33 +940,24 @@ def strip_isobmff(
                     if s_payload.startswith(XMP_UUID):
                         actions.append(f"drop meta sub-box {s_name} (XMP metadata)")
                         continue
-                    if strip_all_metadata or _contains_any(
-                        s_payload, AI_META_HINTS + C2PA_MARKERS
-                    ):
+                    if strip_all_metadata or _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS):
                         actions.append(f"drop meta sub-box {s_name} (UUID metadata)")
                         continue
-                if s_fourcc in (b"xml ", b"bxml"):
-                    if strip_all_metadata or _contains_any(
-                        s_payload, AI_META_HINTS + C2PA_MARKERS
-                    ):
-                        actions.append(f"drop meta sub-box {s_name} (XML metadata)")
-                        continue
-                clean_sub.extend(
-                    struct.pack(">I", len(s_payload) + 8) + s_fourcc + s_payload
-                )
+                if s_fourcc in (b"xml ", b"bxml") and (
+                    strip_all_metadata or _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS)
+                ):
+                    actions.append(f"drop meta sub-box {s_name} (XML metadata)")
+                    continue
+                clean_sub.extend(struct.pack(">I", len(s_payload) + 8) + s_fourcc + s_payload)
 
             new_meta_payload = meta_verflags + clean_sub
-            out.extend(
-                struct.pack(">I", len(new_meta_payload) + 8) + b"meta" + new_meta_payload
-            )
+            out.extend(struct.pack(">I", len(new_meta_payload) + 8) + b"meta" + new_meta_payload)
             continue
 
         out.extend(struct.pack(">I", len(payload) + 8) + fourcc + payload)
 
     if not actions:
-        actions.append(
-            f"no {fmt.upper()} metadata boxes removed (already clean or none matched)"
-        )
+        actions.append(f"no {fmt.upper()} metadata boxes removed (already clean or none matched)")
 
     return bytes(out), actions
 
@@ -1082,8 +1053,7 @@ def clean_image(
             )
             if pixel_removal.get("available"):
                 actions.append(
-                    f"DiffusionPurification pixel removal "
-                    f"(strength {markdiffusion_strength})"
+                    f"DiffusionPurification pixel removal (strength {markdiffusion_strength})"
                 )
             else:
                 actions.append(

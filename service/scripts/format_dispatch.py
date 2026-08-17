@@ -21,6 +21,8 @@ CONTAINER_EXTS = {
     ".svg",
     ".pdf",
     ".docx",
+    ".xlsx",
+    ".pptx",
     ".odt",
     ".html",
     ".htm",
