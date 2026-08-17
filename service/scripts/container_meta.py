@@ -11,6 +11,7 @@ import re
 import subprocess
 import urllib.parse
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,32 @@ from image_meta import (
 )
 from image_meta import (
     detect_format as detect_image_format,
+)
+
+
+class ZipBudgetExceeded(Exception):
+    """A zip's declared decompressed size exceeds the processing cap.
+
+    Kept separate from the parse errors below so a refused zip bomb keeps
+    propagating (as it already does out of the clean_* helpers) instead of
+    being reported as an unparseable container.
+    """
+
+
+# A corrupt, truncated, encrypted, or unsupported-compression zip surfaces as
+# more than just BadZipFile: reading a member can raise NotImplementedError
+# (unknown compression/version), RuntimeError (encrypted), zlib.error (bad
+# deflate stream), EOFError (truncated), OSError (invalid stream), or
+# ValueError (e.g. a negative seek).
+_ZIP_PARSE_ERRORS = (
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    NotImplementedError,
+    RuntimeError,
+    EOFError,
+    OSError,
+    ValueError,
+    zlib.error,
 )
 
 # Frontmatter / meta keys that often carry AI provenance
@@ -162,7 +189,7 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
                         return "odt"
                     if "META-INF/container.xml" in names and any(n.endswith(".opf") for n in names):
                         return "epub"
-            except zipfile.BadZipFile:
+            except _ZIP_PARSE_ERRORS:
                 pass
     return "unknown"
 
@@ -666,7 +693,7 @@ def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
     """Reject zip bombs before decompression (ZipInfo.file_size is stored)."""
     budget[0] += info.file_size
     if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
-        raise ValueError(
+        raise ZipBudgetExceeded(
             "zip decompressed size exceeds cap "
             f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
         )
@@ -739,7 +766,7 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
             custom = [n for n in parts if n.startswith("customXml/")]
             if custom:
                 findings.append(f"customXml parts: {len(custom)}")
-    except zipfile.BadZipFile:
+    except _ZIP_PARSE_ERRORS:
         return False, False, [f"not a valid {fmt.upper()} zip"], {}
     return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(parts)}
 
@@ -1069,7 +1096,7 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
                 if re.search(r"generator|claude|openai|anthropic|gemini", meta, re.I):
                     has_ai = True
                     findings.append("meta.xml generator-like fields")
-    except zipfile.BadZipFile:
+    except _ZIP_PARSE_ERRORS:
         return False, False, ["not a valid ODT zip"], {}
     return has_c2pa, has_ai or has_c2pa, findings, {}
 
