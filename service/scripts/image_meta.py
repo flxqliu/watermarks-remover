@@ -104,6 +104,53 @@ AI_META_HINTS = (
     b"dcterms:provenance",
 )
 
+# Well-known AI generator product/model names. These are matched ONLY
+# against the values of generator-bearing PNG text-chunk keys (Software,
+# Creator, parameters) — see _generator_product_hits — and deliberately
+# kept out of the flat AI_META_HINTS blob scan: bare "Gemini", "Sora",
+# or "Firefly" are ordinary words that can appear in captions, and only a
+# generator field makes them evidence of AI provenance.
+AI_GENERATOR_PRODUCTS = (
+    b"ChatGPT",
+    b"DALL-E",
+    b"Midjourney",
+    b"Stable Diffusion",
+    b"SDXL",
+    b"FLUX",
+    b"DreamStudio",
+    b"Leonardo AI",
+    b"Leonardo.Ai",
+    b"Craiyon",
+    b"NovelAI",
+    b"Ideogram",
+    b"TensorArt",
+    b"Recraft",
+    b"Clipdrop",
+    b"DeepAI",
+    b"NightCafe",
+    b"Bing Image Creator",
+    b"Adobe Firefly",
+    b"Firefly",
+    b"Gemini",
+    b"Imagen",
+    b"Grok",
+    b"Sora",
+    b"Veo",
+    b"Kling",
+    b"Runway",
+    b"Luma",
+    b"Qwen",
+    b"GPT-4",
+    b"GPT-5",
+)
+
+# PNG text-chunk keys whose value can name the generating model/tool.
+# tEXt/iTXt "Software" and "Creator" are the classic generator fields;
+# "parameters" is what Stable Diffusion WebUI writes with the full
+# generation string. Values of other keys (Comment, Description, Title,
+# ...) are free text and are never scanned for product names.
+_GENERATOR_TEXT_KEYS = ("software", "creator", "parameters")
+
 
 @dataclass
 class ImageInspectReport:
@@ -172,6 +219,94 @@ def _contains_any(blob: bytes, needles: tuple[bytes, ...]) -> list[str]:
     return found
 
 
+def _png_text_entries(payload: bytes, ctype: bytes) -> list[tuple[str, str]]:
+    """Parse a PNG text-chunk payload into (key, value) pairs.
+
+    Handles tEXt (latin-1), zTXt (zlib-compressed text), and iTXt
+    (UTF-8, optionally compressed). Malformed or undecodable chunks
+    yield whatever pairs are recoverable; nothing is raised.
+    """
+    entries: list[tuple[str, str]] = []
+    if ctype == b"tEXt":
+        key, sep, text = payload.partition(b"\x00")
+        if sep:
+            entries.append(
+                (
+                    key.decode("latin-1", errors="replace"),
+                    text.decode("latin-1", errors="replace"),
+                )
+            )
+    elif ctype == b"zTXt":
+        key, sep, rest = payload.partition(b"\x00")
+        if not sep or len(rest) < 2:
+            return entries
+        try:
+            text = zlib.decompress(rest[1:])
+        except zlib.error:
+            return entries
+        entries.append(
+            (
+                key.decode("latin-1", errors="replace"),
+                text.decode("latin-1", errors="replace"),
+            )
+        )
+    elif ctype == b"iTXt":
+        key, sep, rest = payload.partition(b"\x00")
+        if not sep or len(rest) < 4:
+            return entries
+        comp_flag = rest[0]
+        rest = rest[2:]  # skip compression flag + method
+        _lang, sep2, rest = rest.partition(b"\x00")
+        if not sep2:
+            return entries
+        _tkey, sep3, text = rest.partition(b"\x00")
+        if not sep3:
+            return entries
+        if comp_flag == 1:
+            try:
+                text = zlib.decompress(text)
+            except zlib.error:
+                return entries
+        entries.append(
+            (
+                key.decode("latin-1", errors="replace"),
+                text.decode("utf-8", errors="replace"),
+            )
+        )
+    return entries
+
+
+def _generator_product_hits(entries: list[tuple[str, str]]) -> list[str]:
+    """Product-name hits scoped to generator-bearing text-chunk keys.
+
+    Returns labels like "Software=ChatGPT" (one per matching product).
+    Matching is a case-insensitive substring check on the value, mirroring
+    _contains_any, but only for _GENERATOR_TEXT_KEYS values.
+    """
+    hits: list[str] = []
+    for key, value in entries:
+        if key.strip().lower() not in _GENERATOR_TEXT_KEYS:
+            continue
+        low = value.lower()
+        for product in AI_GENERATOR_PRODUCTS:
+            label = product.decode("ascii", errors="replace")
+            if label.lower() in low:
+                hits.append(f"{key.strip()}={label}")
+    return hits
+
+
+def _text_chunk_is_ai(payload: bytes, ctype: bytes) -> bool:
+    """True when a PNG text chunk carries AI/C2PA markers.
+
+    Flat markers (AI_META_HINTS + C2PA_MARKERS) match anywhere in the
+    payload; generator product names only match generator-bearing key
+    values (see _generator_product_hits).
+    """
+    if _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
+        return True
+    return bool(_generator_product_hits(_png_text_entries(payload, ctype)))
+
+
 def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
     findings: list[str] = []
     has_c2pa = False
@@ -195,11 +330,19 @@ def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
             findings.append(f"PNG chunk {name} (possible C2PA container)")
         if ctype in (b"tEXt", b"zTXt", b"iTXt", b"eXIf"):
             hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
-            if hits:
+            product_hits = (
+                _generator_product_hits(_png_text_entries(payload, ctype))
+                if ctype in (b"tEXt", b"zTXt", b"iTXt")
+                else []
+            )
+            if hits or product_hits:
                 has_ai = True
                 if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                     has_c2pa = True
-                findings.append(f"PNG {name}: {', '.join(hits[:8])}")
+                parts = [", ".join(hits[:8])] if hits else []
+                if product_hits:
+                    parts.append(f"AI generator ({', '.join(product_hits[:8])})")
+                findings.append(f"PNG {name}: {'; '.join(parts)}")
         if ctype == b"IEND":
             break
         pos = chunk_end + 4  # skip CRC
@@ -1568,7 +1711,7 @@ def strip_png(data: bytes, *, strip_all_text: bool = True) -> tuple[bytes, list[
             drop = True
             actions.append(f"drop chunk {name}")
         elif ctype in (b"tEXt", b"zTXt", b"iTXt"):
-            if strip_all_text or _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
+            if strip_all_text or _text_chunk_is_ai(payload, ctype):
                 drop = True
                 actions.append(f"drop chunk {name}")
         elif _contains_any(ctype + payload, C2PA_MARKERS) and ctype not in (
