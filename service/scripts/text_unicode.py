@@ -187,8 +187,10 @@ _BIDI_CPS: frozenset[int] = frozenset(
 )
 
 # Directional marks and isolates are legitimate in mixed RTL/LTR prose. Inspect
-# them, but preserve them during the default clean. Embeddings and overrides
-# remain destructive by default because they can reorder unrelated spans.
+# them, but preserve them during the default clean. Paired LRE/RLE embeddings
+# (see _valid_bidi_embedding_indices) are preserved too; overrides and
+# unpaired embeddings remain destructive by default because they can reorder
+# unrelated spans.
 _PRESERVABLE_BIDI_CPS: frozenset[int] = frozenset(
     {
         0x061C,
