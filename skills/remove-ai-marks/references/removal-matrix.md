@@ -8,7 +8,7 @@
 | C2PA on PNG/JPEG/WebP/AVIF/HEIC | Drop APP11 / PNG `caBX` / RIFF `C2PA` / ISOBMFF `jumb` & `uuid` / exiftool | `clean_image.py` | Loses provenance metadata | Yes |
 | SVG metadata / XMP / embedded data URIs | Drop `<metadata>`, xmpmeta; clean embedded data URIs | `clean_file.py` | Loses SVG metadata; cleans embedded rasters | Yes (re-inspect) |
 | PDF XMP / info | exiftool `-all=` preferred | `clean_file.py` | Loses PDF metadata; degraded without exiftool | Partial |
-| DOCX props / customXml | Rewrite OOXML zip | `clean_file.py` | Loses doc properties | Yes |
+| DOCX / XLSX / PPTX props / customXml / embedded media | Rewrite OOXML zip, scrub text runs, clean media/ | `clean_file.py` | Loses doc properties; cleans embedded rasters | Yes |
 | ODT meta:generator | Scrub `meta.xml` | `clean_file.py` | Loses generator tag | Yes |
 | HTML generator / JSON-LD / embedded data URIs | Strip tags; clean embedded data URIs | `clean_file.py` | Loses meta; cleans embedded rasters | Yes |
 | Markdown AI frontmatter keys / embedded data URIs | Drop keys; clean embedded data URIs | `clean_file.py` | Loses YAML keys; cleans embedded rasters | Yes |

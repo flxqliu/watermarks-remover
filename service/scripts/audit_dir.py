@@ -15,8 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from audit_lib import aggregate, format_sarif, print_human_report, scan_file  # noqa: E402
-from common import MAX_INPUT_BYTES, emit_json, eprint  # noqa: E402
+from audit_lib import aggregate, format_sarif, print_human_report, scan_file
+from common import MAX_INPUT_BYTES, emit_json, eprint
 
 DEFAULT_SKIP_DIRS = {
     ".git",
@@ -39,9 +39,7 @@ DEFAULT_SKIP_DIRS = {
 
 def walk_files(root: Path, skip_dirs: set[str]):
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            d for d in dirnames if d not in skip_dirs and not d.startswith(".")
-        )
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs and not d.startswith("."))
         for fn in sorted(filenames):
             path = Path(dirpath) / fn
             if path.is_file():
@@ -66,8 +64,14 @@ def main() -> int:
         default="human",
         help="Output format (default: human)",
     )
-    p.add_argument("--json", action="store_true", help="Emit a JSON report (alias for --format json)")
-    p.add_argument("--sarif", action="store_true", help="Emit an OASIS SARIF 2.1.0 report (alias for --format sarif)")
+    p.add_argument(
+        "--json", action="store_true", help="Emit a JSON report (alias for --format json)"
+    )
+    p.add_argument(
+        "--sarif",
+        action="store_true",
+        help="Emit an OASIS SARIF 2.1.0 report (alias for --format sarif)",
+    )
     p.add_argument(
         "-j",
         "--jobs",
@@ -93,10 +97,10 @@ def main() -> int:
         return 2
 
     skip_dirs = set(DEFAULT_SKIP_DIRS)
-    for name in args.skip.split(","):
-        name = name.strip()
-        if name:
-            skip_dirs.add(name)
+    for raw_part in args.skip.split(","):
+        part = raw_part.strip()
+        if part:
+            skip_dirs.add(part)
 
     paths = list(walk_files(root, skip_dirs))
     files: list[dict] = []

@@ -14,6 +14,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
 from common import (
     classify_finding_confidence,
     safe_arg,
@@ -25,7 +26,6 @@ from common import (
 from image_meta import (
     AI_META_HINTS,
     C2PA_MARKERS,
-    detect_format as detect_image_format,
     inspect_isobmff,
     inspect_jpeg,
     inspect_png,
@@ -35,6 +35,9 @@ from image_meta import (
     strip_jpeg,
     strip_png,
     strip_webp,
+)
+from image_meta import (
+    detect_format as detect_image_format,
 )
 
 # Frontmatter / meta keys that often carry AI provenance
@@ -102,9 +105,7 @@ class ContainerInspectReport:
             "has_c2pa": self.has_c2pa,
             "has_ai_metadata": self.has_ai_metadata,
             "findings": self.findings,
-            "findings_confidence": [
-                classify_finding_confidence(f) for f in self.findings
-            ],
+            "findings_confidence": [classify_finding_confidence(f) for f in self.findings],
             "tools": self.tools,
             "details": self.details,
             "notes": self.notes,
@@ -123,6 +124,10 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
         return "pdf"
     if ext in (".docx",):
         return "docx"
+    if ext in (".xlsx",):
+        return "xlsx"
+    if ext in (".pptx",):
+        return "pptx"
     if ext in (".odt",):
         return "odt"
     if ext in (".html", ".htm"):
@@ -141,6 +146,10 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
                     names = set(zf.namelist())
                     if "word/document.xml" in names:
                         return "docx"
+                    if "xl/workbook.xml" in names:
+                        return "xlsx"
+                    if "ppt/presentation.xml" in names:
+                        return "pptx"
                     if "content.xml" in names and "meta.xml" in names:
                         return "odt"
             except zipfile.BadZipFile:
@@ -192,7 +201,7 @@ def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
                 data = base64.b64decode(raw_b64)
             else:
                 data = urllib.parse.unquote_to_bytes(payload)
-        except Exception:
+        except Exception:  # noqa: S112 - malformed data URI; skip to next match
             continue
 
         if not data:
@@ -255,17 +264,11 @@ def _clean_embedded_data_uris(
 
         try:
             if fmt == "png":
-                cleaned_bytes, sub_actions = strip_png(
-                    data, strip_all_text=strip_all_metadata
-                )
+                cleaned_bytes, sub_actions = strip_png(data, strip_all_text=strip_all_metadata)
             elif fmt == "jpeg":
-                cleaned_bytes, sub_actions = strip_jpeg(
-                    data, strip_all_app=strip_all_metadata
-                )
+                cleaned_bytes, sub_actions = strip_jpeg(data, strip_all_app=strip_all_metadata)
             elif fmt == "webp":
-                cleaned_bytes, sub_actions = strip_webp(
-                    data, strip_all_metadata=strip_all_metadata
-                )
+                cleaned_bytes, sub_actions = strip_webp(data, strip_all_metadata=strip_all_metadata)
             elif fmt in ("avif", "heic"):
                 cleaned_bytes, sub_actions = strip_isobmff(
                     data, fmt, strip_all_metadata=strip_all_metadata
@@ -278,9 +281,7 @@ def _clean_embedded_data_uris(
         if not any("drop" in a.lower() for a in sub_actions) or cleaned_bytes == data:
             return full_match
 
-        actions.append(
-            f"cleaned embedded data:image/{mime} ({', '.join(sub_actions[:2])})"
-        )
+        actions.append(f"cleaned embedded data:image/{mime} ({', '.join(sub_actions[:2])})")
 
         if is_b64:
             new_b64 = base64.b64encode(cleaned_bytes).decode("ascii")
@@ -438,9 +439,9 @@ def _is_cms_generator_meta(tag: str) -> bool:
     ).lower()
     if name_or_prop != "generator":
         return False
-    if _GENERATOR_AI_RE.search(attrs.get("content", "")) or _GENERATOR_AI_RE.search(tag):
-        return False
-    return True
+    return not (_GENERATOR_AI_RE.search(attrs.get("content", "")) or _GENERATOR_AI_RE.search(tag))
+
+
 _JSONLD_RE = re.compile(
     r"<script\b[^>]*type\s*=\s*[\"']application/ld\+json[\"'][^>]*>.*?</script>",
     re.I | re.DOTALL,
@@ -530,6 +531,7 @@ def clean_html(text: str) -> tuple[str, list[str]]:
 # SVG
 # ---------------------------------------------------------------------------
 
+
 def inspect_svg(data: bytes) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_c2pa, has_ai, hits = _blob_hits(data)
@@ -579,6 +581,7 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if n:
         actions.append(f"drop xmpmeta x{n}")
         text = new
+
     # Drop comments that look like provenance
     def _cmt(m: re.Match[str]) -> str:
         body = m.group(0)
@@ -660,11 +663,11 @@ def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
 
 
 def _is_docx_meta_part(name: str) -> bool:
-    """Return True for DOCX parts that carry provenance, not visible content."""
+    """Return True for DOCX/XLSX/PPTX parts that carry provenance, not visible content."""
     return name.startswith(("docProps/", "customXml/"))
 
 
-def inspect_docx(data: bytes) -> tuple[bool, bool, list[str], dict]:
+def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_c2pa = False
     has_ai = False
@@ -676,9 +679,34 @@ def inspect_docx(data: bytes) -> tuple[bool, bool, list[str], dict]:
             for info in zf.infolist():
                 _check_zip_budget(info, budget)
                 name = info.filename
+                # Check media parts for C2PA/AI metadata
+                if re.search(
+                    r"^(?:word|xl|ppt)/media/.+\.(png|jpe?g|webp|avif|heic|svg)$", name, re.I
+                ):
+                    raw = zf.read(name)
+                    img_fmt = detect_image_format(raw)
+                    sub_c2pa, sub_ai, sub_findings = False, False, []
+                    if img_fmt == "png":
+                        sub_c2pa, sub_ai, sub_findings = inspect_png(raw)
+                    elif img_fmt == "jpeg":
+                        sub_c2pa, sub_ai, sub_findings = inspect_jpeg(raw)
+                    elif img_fmt == "webp":
+                        sub_c2pa, sub_ai, sub_findings = inspect_webp(raw)
+                    elif img_fmt in ("avif", "heic"):
+                        sub_c2pa, sub_ai, sub_findings = inspect_isobmff(raw, img_fmt)
+                    elif name.lower().endswith(".svg") or raw.lstrip().startswith(b"<"):
+                        sub_c2pa, sub_ai, sub_findings, _ = inspect_svg(raw)
+                    if sub_c2pa:
+                        has_c2pa = True
+                    if sub_ai or sub_c2pa:
+                        has_ai = True
+                    for sf in sub_findings:
+                        findings.append(f"{name}: {sf}")
+                    continue
+
                 # Only metadata/provenance parts carry AI markers. The visible
-                # body (word/*.xml) may legitimately mention vendor names such
-                # as "Claude" without being AI-generated metadata.
+                # body (word/*.xml, xl/*.xml, ppt/*.xml) may legitimately mention
+                # vendor names such as "Claude" without being AI-generated metadata.
                 if not _is_docx_meta_part(name):
                     continue
                 raw = zf.read(name)
@@ -694,8 +722,20 @@ def inspect_docx(data: bytes) -> tuple[bool, bool, list[str], dict]:
             if custom:
                 findings.append(f"customXml parts: {len(custom)}")
     except zipfile.BadZipFile:
-        return False, False, ["not a valid DOCX zip"], {}
+        return False, False, [f"not a valid {fmt.upper()} zip"], {}
     return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(parts)}
+
+
+def inspect_docx(data: bytes) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "docx")
+
+
+def inspect_xlsx(data: bytes) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "xlsx")
+
+
+def inspect_pptx(data: bytes) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "pptx")
 
 
 def _scrub_docx_text(xml_text: str) -> tuple[str, int, int]:
@@ -724,6 +764,50 @@ def _scrub_docx_text(xml_text: str) -> tuple[str, int, int]:
         return open_tag + new_inner + close_tag
 
     new = re.sub(r"(<w:t\b[^>]*>)(.*?)(</w:t>)", _repl, xml_text, flags=re.S)
+    return new, removed, replaced
+
+
+def _scrub_xlsx_text(xml_text: str) -> tuple[str, int, int]:
+    """Run Layer A over the ``<t>`` text elements of an XLSX part."""
+    from text_unicode import clean_text  # local import to avoid cycles
+
+    removed = 0
+    replaced = 0
+
+    def _repl(m: re.Match[str]) -> str:
+        nonlocal removed, replaced
+        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
+        new_inner, stats = clean_text(inner)
+        if not (stats["removed_count"] or stats["replaced_count"]):
+            return m.group(0)
+        removed += stats["removed_count"]
+        replaced += stats["replaced_count"]
+        if (new_inner[:1].isspace() or new_inner[-1:].isspace()) and "xml:space" not in open_tag:
+            open_tag = open_tag[:-1] + ' xml:space="preserve">'
+        return open_tag + new_inner + close_tag
+
+    new = re.sub(r"(<t\b[^>]*>)(.*?)(</t>)", _repl, xml_text, flags=re.S)
+    return new, removed, replaced
+
+
+def _scrub_pptx_text(xml_text: str) -> tuple[str, int, int]:
+    """Run Layer A over the ``<a:t>`` text elements of a PPTX part."""
+    from text_unicode import clean_text  # local import to avoid cycles
+
+    removed = 0
+    replaced = 0
+
+    def _repl(m: re.Match[str]) -> str:
+        nonlocal removed, replaced
+        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
+        new_inner, stats = clean_text(inner)
+        if not (stats["removed_count"] or stats["replaced_count"]):
+            return m.group(0)
+        removed += stats["removed_count"]
+        replaced += stats["replaced_count"]
+        return open_tag + new_inner + close_tag
+
+    new = re.sub(r"(<a:t\b[^>]*>)(.*?)(</a:t>)", _repl, xml_text, flags=re.S)
     return new, removed, replaced
 
 
@@ -793,7 +877,9 @@ def _prune_dangling_relationships(
     return new.encode("utf-8"), dropped[0]
 
 
-def clean_docx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+def _scrub_ooxml_zip(
+    data: bytes, fmt: str, *, also_layer_a_text: bool = True
+) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     budget = [0]
     layer_removed = 0
@@ -804,33 +890,57 @@ def clean_docx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
             name = info.filename
             _check_zip_budget(info, budget)
             raw = zin.read(name)
-            # Drop entire customXml trees (often provenance injects)
+
+            # 1. Clean embedded media (PNG, JPEG, WebP, AVIF, HEIC, SVG)
+            if re.search(r"^(?:word|xl|ppt)/media/.+\.(png|jpe?g|webp|avif|heic|svg)$", name, re.I):
+                img_fmt = detect_image_format(raw)
+                sub_actions: list[str] = []
+                cleaned_bytes = raw
+                try:
+                    if img_fmt == "png":
+                        cleaned_bytes, sub_actions = strip_png(raw, strip_all_text=True)
+                    elif img_fmt == "jpeg":
+                        cleaned_bytes, sub_actions = strip_jpeg(raw, strip_all_app=True)
+                    elif img_fmt == "webp":
+                        cleaned_bytes, sub_actions = strip_webp(raw, strip_all_metadata=True)
+                    elif img_fmt in ("avif", "heic"):
+                        cleaned_bytes, sub_actions = strip_isobmff(
+                            raw, img_fmt, strip_all_metadata=True
+                        )
+                    elif name.lower().endswith(".svg") or raw.lstrip().startswith(b"<"):
+                        cleaned_bytes, sub_actions = clean_svg(raw)
+                except Exception:  # noqa: S110 - malformed embedded media; keep original part
+                    pass
+                if any("drop" in a.lower() for a in sub_actions) and cleaned_bytes != raw:
+                    actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
+                    raw = cleaned_bytes
+                kept.append((info, raw))
+                continue
+
+            # 2. Drop customXml trees
             if name.startswith("customXml/"):
-                # Drop customXml — often used for provenance injects; body stays in word/
                 actions.append(f"drop part {name}")
                 continue
+
+            # 3. docProps/ provenance
             if name in DOCX_META_PARTS or name.startswith("docProps/"):
-                # docProps/custom.xml holds arbitrary user properties — a
-                # provenance channel. The part is optional, so drop it whole.
                 if name.endswith("custom.xml"):
                     actions.append(f"drop part {name}")
                     continue
                 text = raw.decode("utf-8", errors="replace")
-                # Empty the provenance fields unconditionally (dc:title is not
-                # in DOCX_SCRUB_FIELDS). Keeping the tags keeps the XML schema
-                # valid; Word tolerates empty core/app properties.
                 new = text
                 for tag, label in DOCX_SCRUB_FIELDS:
                     pat = rf"(<{tag}\b[^>]*>)(.*?)(</{tag}>)"
 
-                    def _empty(m: re.Match[str], _label=label) -> str:
+                    def _empty(m: re.Match[str], _label=label, _name=name) -> str:
                         if m.group(2):
-                            actions.append(f"scrub {name} field {_label}")
+                            actions.append(f"scrub {_name} field {_label}")
                         return m.group(1) + m.group(3)
 
                     new = re.sub(pat, _empty, new, flags=re.I | re.DOTALL)
                 raw = new.encode("utf-8")
-            # content types: remove overrides for parts that no longer exist
+
+            # 4. [Content_Types].xml overrides
             if name == "[Content_Types].xml":
                 text = raw.decode("utf-8", errors="replace")
                 new, n = re.subn(
@@ -849,27 +959,42 @@ def clean_docx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                 if n:
                     actions.append(f"drop Content_Types custom.xml override x{n}")
                     raw = new.encode("utf-8")
-            # Layer A over the visible body: headers/footers/footnotes included.
-            if also_layer_a_text and name.startswith("word/") and name.endswith(".xml"):
-                text = raw.decode("utf-8", errors="replace")
-                new, r, rp = _scrub_docx_text(text)
-                if r or rp:
-                    layer_removed += r
-                    layer_replaced += rp
-                    raw = new.encode("utf-8")
+
+            # 5. Layer A text runs
+            if also_layer_a_text and name.endswith(".xml"):
+                if fmt == "docx" and name.startswith("word/"):
+                    text = raw.decode("utf-8", errors="replace")
+                    new, r, rp = _scrub_docx_text(text)
+                    if r or rp:
+                        layer_removed += r
+                        layer_replaced += rp
+                        raw = new.encode("utf-8")
+                elif fmt == "xlsx" and name.startswith("xl/"):
+                    text = raw.decode("utf-8", errors="replace")
+                    new, r, rp = _scrub_xlsx_text(text)
+                    if r or rp:
+                        layer_removed += r
+                        layer_replaced += rp
+                        raw = new.encode("utf-8")
+                elif fmt == "pptx" and name.startswith("ppt/"):
+                    text = raw.decode("utf-8", errors="replace")
+                    new, r, rp = _scrub_pptx_text(text)
+                    if r or rp:
+                        layer_removed += r
+                        layer_replaced += rp
+                        raw = new.encode("utf-8")
+
             kept.append((info, raw))
 
-    # Removing parts must not leave relationships pointing at them: prune every
-    # rels member against the set of parts that actually survive.
     kept_names = {info.filename for info, _ in kept}
     final: list[tuple[zipfile.ZipInfo, bytes]] = []
     for info, raw in kept:
+        part_raw = raw
         if info.filename.endswith(".rels"):
-            new_raw, n = _prune_dangling_relationships(info.filename, raw, kept_names)
+            part_raw, n = _prune_dangling_relationships(info.filename, raw, kept_names)
             if n:
                 actions.append(f"prune dangling relationships x{n} in {info.filename}")
-            raw = new_raw
-        final.append((info, raw))
+        final.append((info, part_raw))
 
     out_buf = io.BytesIO()
     with zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
@@ -878,8 +1003,20 @@ def clean_docx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
     if layer_removed or layer_replaced:
         actions.append(f"layer A text: removed={layer_removed} replaced={layer_replaced}")
     if not actions:
-        actions.append("no DOCX metadata parts removed")
+        actions.append(f"no {fmt.upper()} metadata parts removed")
     return out_buf.getvalue(), actions
+
+
+def clean_docx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+    return _scrub_ooxml_zip(data, "docx", also_layer_a_text=also_layer_a_text)
+
+
+def clean_xlsx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+    return _scrub_ooxml_zip(data, "xlsx", also_layer_a_text=also_layer_a_text)
+
+
+def clean_pptx(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
+    return _scrub_ooxml_zip(data, "pptx", also_layer_a_text=also_layer_a_text)
 
 
 def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
@@ -915,9 +1052,10 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
     budget = [0]
     layer_removed = 0
     layer_replaced = 0
-    with zipfile.ZipFile(io.BytesIO(data)) as zin, zipfile.ZipFile(
-        out_buf, "w", compression=zipfile.ZIP_DEFLATED
-    ) as zout:
+    with (
+        zipfile.ZipFile(io.BytesIO(data)) as zin,
+        zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout,
+    ):
         for info in zin.infolist():
             name = info.filename
             _check_zip_budget(info, budget)
@@ -933,6 +1071,7 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
                 if n:
                     actions.append("drop meta:generator")
                     text = new
+
                 # scrub creator-like if AI
                 def _creator(m: re.Match[str]) -> str:
                     if AI_META_NAME_RE.search(m.group(0)):
@@ -1131,6 +1270,7 @@ def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
 # Unified API
 # ---------------------------------------------------------------------------
 
+
 def inspect_container(path: Path) -> ContainerInspectReport:
     data = path.read_bytes()
     fmt = detect_container_format(path, data)
@@ -1144,6 +1284,10 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         tools = details.pop("tools", {})
     elif fmt == "docx":
         has_c2pa, has_ai, findings, details = inspect_docx(data)
+    elif fmt == "xlsx":
+        has_c2pa, has_ai, findings, details = inspect_xlsx(data)
+    elif fmt == "pptx":
+        has_c2pa, has_ai, findings, details = inspect_pptx(data)
     elif fmt == "odt":
         has_c2pa, has_ai, findings, details = inspect_odt(data)
     elif fmt == "html":
@@ -1169,15 +1313,15 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         layer_a_total = ta["suspicious_total"]
         layer_a_hits = ta["hits"]
         for h in layer_a_hits:
-            findings.append(
-                f"layer-a: {h['codepoint']} {h['label']} x{h['count']} ({h['kind']})"
-            )
+            findings.append(f"layer-a: {h['codepoint']} {h['label']} x{h['count']} ({h['kind']})")
 
     notes: list[str] = []
     if fmt == "pdf":
-        notes.append("PDF inspection is best-effort; exiftool/c2patool give more reliable metadata detection")
-    elif fmt == "docx":
-        notes.append("DOCX: only metadata/provenance parts are scanned; visible body text is ignored")
+        notes.append(
+            "PDF inspection is best-effort; exiftool/c2patool give more reliable metadata detection"
+        )
+    elif fmt in ("docx", "xlsx", "pptx"):
+        notes.append(f"{fmt.upper()}: metadata/provenance and embedded media are scanned")
     if "unsupported" in details:
         notes.append(f"format not fully inspected: {fmt}")
     if layer_a_total:
@@ -1186,7 +1330,7 @@ def inspect_container(path: Path) -> ContainerInspectReport:
             "clean removes these"
         )
 
-    if fmt in ("svg", "pdf", "docx") and not tools:
+    if fmt in ("svg", "pdf", "docx", "xlsx", "pptx") and not tools:
         tools = run_optional_tools(path)
 
     return ContainerInspectReport(
@@ -1233,6 +1377,12 @@ def clean_container(
         meta.update(meta_extra)
     elif fmt == "docx":
         cleaned, actions = clean_docx(data, also_layer_a_text=also_layer_a_text)
+        safe_write_bytes(dest, cleaned)
+    elif fmt == "xlsx":
+        cleaned, actions = clean_xlsx(data, also_layer_a_text=also_layer_a_text)
+        safe_write_bytes(dest, cleaned)
+    elif fmt == "pptx":
+        cleaned, actions = clean_pptx(data, also_layer_a_text=also_layer_a_text)
         safe_write_bytes(dest, cleaned)
     elif fmt == "odt":
         cleaned, actions = clean_odt(data, also_layer_a_text=also_layer_a_text)

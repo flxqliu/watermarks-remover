@@ -12,8 +12,9 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 
-from audit_lib import aggregate, format_sarif, scan_file  # noqa: E402
-from tests.test_clean_image import _minimal_png_with_text  # noqa: E402
+from audit_lib import format_sarif
+
+from tests.test_clean_image import _minimal_png_with_text
 
 
 def test_format_sarif_structure():
@@ -65,12 +66,12 @@ def test_format_sarif_structure():
     assert len(results) == 3
 
     # Check first result (C2PA)
-    c2pa_res = [r for r in results if r["ruleId"] == "AI-WATERMARK-C2PA"][0]
+    c2pa_res = next(r for r in results if r["ruleId"] == "AI-WATERMARK-C2PA")
     assert c2pa_res["level"] == "error"
     assert "logo.png" in c2pa_res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
 
     # Check Layer A result
-    unicode_res = [r for r in results if r["ruleId"] == "AI-WATERMARK-UNICODE-LAYER-A"][0]
+    unicode_res = next(r for r in results if r["ruleId"] == "AI-WATERMARK-UNICODE-LAYER-A")
     assert unicode_res["level"] == "warning"
     assert "readme.md" in unicode_res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
 
@@ -78,7 +79,9 @@ def test_format_sarif_structure():
 def test_audit_dir_serial_vs_parallel(tmp_path):
     # Setup multiple files
     for i in range(10):
-        (tmp_path / f"text_{i}.txt").write_text(f"Text line {i} with \u200b carrier", encoding="utf-8")
+        (tmp_path / f"text_{i}.txt").write_text(
+            f"Text line {i} with \u200b carrier", encoding="utf-8"
+        )
     (tmp_path / "image.png").write_bytes(_minimal_png_with_text())
     (tmp_path / "clean.md").write_text("# Pure human markdown", encoding="utf-8")
 
