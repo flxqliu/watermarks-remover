@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import struct
 import sys
 import zipfile
 from pathlib import Path
@@ -15,6 +16,7 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import common
+import container_meta
 from common import (
     backup_path,
     read_text_input,
@@ -26,6 +28,7 @@ from container_meta import (
     MAX_ZIP_DECOMPRESSED_BYTES,
     ZipBudgetExceeded,
     _check_zip_budget,
+    _read_zip_member,
     inspect_docx,
 )
 
@@ -57,24 +60,62 @@ def test_zip_budget_rejects_oversized_member():
     assert raised
 
 
-def test_zip_budget_accumulates_across_members():
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.xml", b"a")
-        zf.writestr("b.xml", b"b")
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        infos = zf.infolist()
-    for info in infos:
-        info.file_size = MAX_ZIP_DECOMPRESSED_BYTES // 2 + 1024
-    budget = [0]
-    raised = False
-    for info in infos:
-        try:
-            _check_zip_budget(info, budget)
-        except ZipBudgetExceeded:
-            raised = True
+def _patch_zip_declared_size(data: bytes, new_size: int) -> bytes:
+    """Rewrite the uncompressed-size field of every central-directory entry.
+
+    Produces the crafted-archive shape zip-bomb guards must defend
+    against: the central directory (which backs ZipInfo.file_size) claims
+    ``new_size`` decompressed bytes while the real deflate payload and its
+    CRC stay intact. The local headers are left untouched.
+    """
+    out = bytearray(data)
+    pos = 0
+    while True:
+        pos = out.find(b"PK\x01\x02", pos)
+        if pos == -1:
             break
-    assert raised
+        out[pos + 24 : pos + 28] = struct.pack("<I", new_size)
+        pos += 4
+    return bytes(out)
+
+
+def test_zip_budget_charges_real_bytes_not_declared(monkeypatch):
+    # The budget must be charged on bytes actually produced, not on the
+    # central directory claim (ZipInfo.file_size is attacker-controlled).
+    # Here the archive declares 150 KiB for a member that really carries
+    # 128 KiB; the accounting must follow reality.
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 1 << 20)
+    payload = b"y" * (1 << 17)  # 128 KiB
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("word/document.xml", payload)
+    crafted = _patch_zip_declared_size(buf.getvalue(), (1 << 17) + (1 << 16))
+    with zipfile.ZipFile(io.BytesIO(crafted)) as zf:
+        info = zf.infolist()[0]
+        assert info.file_size == (1 << 17) + (1 << 16)  # declared claim
+        budget = [0]
+        out = _read_zip_member(zf, info, budget)
+    assert out == payload
+    assert budget[0] == len(payload)  # real bytes, not the declared claim
+
+
+def test_zip_budget_accumulates_real_bytes_across_members(monkeypatch):
+    # The cap is cumulative across members: several members under the cap
+    # individually can still exhaust it together.
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 1 << 20)
+    payload = b"a" * (1 << 19)  # 512 KiB
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.xml", payload)
+        zf.writestr("b.xml", payload)
+        zf.writestr("c.xml", payload)  # 3 x 512 KiB > 1 MiB cap
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        budget = [0]
+        infos = zf.infolist()
+        _read_zip_member(zf, infos[0], budget)
+        _read_zip_member(zf, infos[1], budget)
+        with pytest.raises(ZipBudgetExceeded):
+            _read_zip_member(zf, infos[2], budget)
 
 
 def test_inspect_docx_with_ai_markers_does_not_crash():
