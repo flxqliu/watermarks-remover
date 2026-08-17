@@ -85,6 +85,10 @@ make serve                 # http://127.0.0.1:8765
 python3 service/scripts/server.py --host 127.0.0.1 --port 8765
 ```
 
+### Windows (no Docker)
+
+See [docs/windows-autostart.md](docs/windows-autostart.md) for auto-starting the service at Windows login without Docker.
+
 For the whole infra (core + optional harness/heavy backends), see [Docker / compose](#docker--compose) below.
 
 Optional system tools (auto-used when present — preinstalled in the core Docker image):
