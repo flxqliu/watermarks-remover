@@ -182,6 +182,25 @@ def test_unknown_option_rejected(conn):
     assert "unknown option" in body["error"]
 
 
+@pytest.mark.parametrize(
+    ("key", "value", "type_name"),
+    [
+        ("nfkc", "false", "boolean"),
+        ("aggressive_homoglyphs", 1, "boolean"),
+        ("keep_non_ai_metadata", None, "boolean"),
+        ("also_layer_a_text", {}, "boolean"),
+        ("strip_all_metadata", [], "boolean"),
+        ("remove_pixel", False, "string"),
+    ],
+)
+def test_option_wrong_type_rejected(conn, key, value, type_name):
+    status, body = _post(
+        conn, "/clean", {"file": _b64(b"x"), "name": "x.txt", "options": {key: value}}
+    )
+    assert status == 400
+    assert body["error"] == f"option '{key}' must be a {type_name}"
+
+
 def test_bad_base64_rejected(conn):
     status, _body = _post(conn, "/inspect", {"file": "!!!not-base64!!!"})
     assert status == 400
