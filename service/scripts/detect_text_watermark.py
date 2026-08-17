@@ -71,9 +71,9 @@ def resolve_device(raw: str | None) -> str:
 
         if torch.cuda.is_available():
             return "cuda"
-        mps = getattr(torch.backends, "mps", None)
-        if mps is not None and mps.is_available():
-            return "mps"
+        # Never auto-select mps: SynthID/KGW build torch.Generator(device=...),
+        # which supports only cpu/cuda and raises RuntimeError on 'mps' (Apple
+        # Silicon). Fall through to cpu. Pass --device mps explicitly to override.
     except Exception:  # noqa: S110 - optional torch device detection
         pass
     return "cpu"
