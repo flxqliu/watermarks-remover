@@ -971,7 +971,9 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
                 if clear_rate is not None and mean_tokens_out
                 else None
             ),
-            "notes": sorted({n for r in group for n in r.get("notes", [])}),
+            "notes": sorted(
+                {n for r in group for n in (r.get("notes") or []) if isinstance(n, str)}
+            ),
         }
         out[variant] = entries
     return out
@@ -1266,7 +1268,7 @@ def main() -> int:
                     q.get("tokens_out", ""),
                     r.get("seconds", ""),
                     round(r.get("usd") or 0.0, 6),
-                    "; ".join(r.get("notes", [])),
+                    "; ".join(str(n) for n in r.get("notes") or []),
                 )
             )
         )

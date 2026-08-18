@@ -493,6 +493,33 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+def test_aggregate_tolerates_list_in_notes():
+    """A row whose notes contain a non-string must not crash aggregation."""
+    rows = [
+        {
+            "variant": "rewrite-paraphrase:1",
+            "kind": "rewrite",
+            "before_pos": True,
+            "after_pos": False,
+            "cleared": True,
+            "score_before": 2.0,
+            "score_after": -1.0,
+            "quality": {
+                "lexical_divergence": 0.8,
+                "length_ratio": 1.0,
+                "numbers_preserved": 1.0,
+                "tokens_in": 100,
+                "tokens_out": 100,
+            },
+            "seconds": 1.0,
+            "usd": 0.0,
+            "notes": ["clean note", ["nested", "list"], {"d": 1}],
+        }
+    ]
+    agg = aggregate(rows, [("paraphrase", 1)])
+    assert agg["rewrite-paraphrase:1"]["notes"] == ["clean note"]
+
+
 # Persistent MarkLLM worker
 # ---------------------------------------------------------------------------
 
