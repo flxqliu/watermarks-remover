@@ -137,7 +137,9 @@ class StylometryReport:
             "path": self.path,
             "word_count": self.word_count,
             "sentence_count": self.sentence_count,
-            "burstiness_cv": round(self.burstiness_cv, 4) if self.burstiness_cv is not None else None,
+            "burstiness_cv": round(self.burstiness_cv, 4)
+            if self.burstiness_cv is not None
+            else None,
             "lexical_diversity": round(self.lexical_diversity, 4),
             "ai_ngram_density": round(self.ai_ngram_density, 4),
             "matched_markers": self.matched_markers,
@@ -390,7 +392,11 @@ def print_human_stylometry_report(report: StylometryReport, explain: bool = Fals
     print(f"AI Probability:     {report.score * 100:.1f}% (score: {report.score:.3f})")
     print(f"Word Count:         {report.word_count}")
     print(f"Sentence Count:     {report.sentence_count}")
-    cv_display = f"{report.burstiness_cv:.3f}" if report.burstiness_cv is not None else "n/a (fewer than 2 sentences)"
+    cv_display = (
+        f"{report.burstiness_cv:.3f}"
+        if report.burstiness_cv is not None
+        else "n/a (fewer than 2 sentences)"
+    )
     print(f"Sentence CV:        {cv_display}")
     print(f"Lexical Diversity:  {report.lexical_diversity:.3f} (MATTR)")
     print(f"AI Marker Density:  {report.ai_ngram_density:.3f} / 100 words")

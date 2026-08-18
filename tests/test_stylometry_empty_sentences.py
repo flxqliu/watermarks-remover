@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from score_stylometry import compute_burstiness, score_text_stylometry as score_text
+from score_stylometry import compute_burstiness
+from score_stylometry import score_text_stylometry as score_text
 
 PLAIN = (
     "We ran the probe for three weeks. Traffic was uneven. "
