@@ -341,7 +341,7 @@ _ORTHOGRAPHIC_CF: frozenset[int] = frozenset(
 )
 _MONGOLIAN_FVS: frozenset[int] = frozenset({0x180B, 0x180C, 0x180D, 0x180F})
 _KHMER_VOWELS: frozenset[int] = frozenset({0x17B4, 0x17B5})
-_HANGUL_FILLERS: frozenset[int] = frozenset({0x115F, 0x1160})
+_HANGUL_FILLERS: frozenset[int] = frozenset({0x115F, 0x1160, 0x3164, 0xFFA0})
 _SCRIPT_GLUE: frozenset[int] = _MONGOLIAN_FVS | _KHMER_VOWELS | _HANGUL_FILLERS
 
 
@@ -421,10 +421,15 @@ def _is_khmer_letter(cp: int) -> bool:
 
 
 def _is_hangul_jamo(cp: int) -> bool:
+    # Conjoining jamo plus the compatibility and halfwidth presentation forms,
+    # so each filler can follow letters of its own form (U+115F/U+1160 after
+    # conjoining jamo, U+3164 after compatibility jamo, U+FFA0 after halfwidth).
     return (
         0x1100 <= cp <= 0x11FF
         or 0xA960 <= cp <= 0xA97C  # Hangul Jamo Extended-A
         or 0xD7B0 <= cp <= 0xD7C6  # Hangul Jamo Extended-B
+        or 0x3131 <= cp <= 0x318E  # Hangul Compatibility Jamo (incl. U+3164)
+        or 0xFFA1 <= cp <= 0xFFDC  # halfwidth Hangul jamo letters
     )
 
 

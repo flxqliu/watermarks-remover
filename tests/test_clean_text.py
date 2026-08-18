@@ -334,6 +334,24 @@ def test_clean_preserves_hangul_fillers():
         assert cleaned == raw
 
 
+def test_clean_preserves_compatibility_and_halfwidth_hangul_fillers():
+    # U+3164 after a compatibility jamo and U+FFA0 after a halfwidth jamo are
+    # fillers in their own presentation form, preserved exactly like
+    # U+115F/U+1160 after conjoining jamo.
+    for raw in ("\u3131\u3164\u314f", "\uffa1\uffa0\uffc2"):
+        cleaned, stats = clean_text(raw)
+        assert cleaned == raw
+        assert stats["removed_count"] == 0
+
+
+def test_clean_still_strips_floating_compatibility_and_halfwidth_fillers():
+    # Isolated or between Latin they stay contraband (see also
+    # test_clean_strips_missed_default_ignorable_carriers).
+    for raw in ("a\u3164b", "a\uffa0b", "\u3164", "\uffa0"):
+        cleaned, _ = clean_text(raw)
+        assert "\u3164" not in cleaned and "\uffa0" not in cleaned
+
+
 def test_clean_still_strips_floating_script_glue():
     # Isolated between Latin these are contraband, not orthography.
     for raw in ("a\u180bb", "a\u17b4b", "a\u115fb", "\u180b", "\u1160"):
