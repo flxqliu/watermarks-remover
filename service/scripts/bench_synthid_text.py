@@ -1056,6 +1056,15 @@ def render_markdown(
         + " Rewriting with a watermarked model can re-stamp the text."
     )
     L.append("")
+    L.append(
+        "**Gemini tier note (Aug 2026):** Google retired SynthID text watermarking "
+        "on the Generative Language API — text output is no longer watermarked and "
+        "DETECT_TEXT_WATERMARK is rejected on current (3.x) models. The Gemini tier "
+        "here fails soft with the live API error unless a working vendor endpoint "
+        "(e.g. Vertex AI) is configured, so absent gemini_* columns mean "
+        "unavailable, not a negative result."
+    )
+    L.append("")
     L.append("## Results (per variant)")
     L.append("")
     L.append(

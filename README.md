@@ -280,7 +280,7 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | --- | --- | --- |
 | `WATERMARKS_SERVER_API_KEY` | `wr-core` (via compose `environment`) | Require `Authorization: Bearer <key>` on the HTTP API |
 | `WATERMARKS_GEMINI_API_KEY` | `wr-core` | Enable Google's SynthID-text detector (`/detect`, `detect_before/after`) — env only, never on argv |
-| `WATERMARKS_GEMINI_MODEL` | `wr-core` | Gemini model for detection (default `gemini-2.5-flash`) |
+| `WATERMARKS_GEMINI_MODEL` | `wr-core` | Gemini model for detection (default `gemini-3.6-flash`; note: Google retired text watermark detection on the API — see `vendor-notes.md`) |
 | `WATERMARKS_SYNTHID_SCORER_URL` | `wr-core` | Point core at the `wr-synthid-score` sidecar for SynthID image scoring (e.g. `http://wr-synthid-score:8766` under the heavy profile) |
 | `WATERMARKS_SYNTHID_SCORER_API_KEY` | `wr-core` + `wr-synthid-score` | Shared bearer key for the scorer sidecar (empty = no auth) |
 | `WATERMARKS_MARKLLM_SCHEME` | `text_detectors.py` (host) | MarkLLM scheme for `/detect`: `kgw` (default) / `synthid` |

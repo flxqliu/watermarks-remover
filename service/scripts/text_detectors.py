@@ -45,7 +45,12 @@ from urllib.parse import urlparse
 GEMINI_DETECT_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# Note (Aug 2026): Google retired SynthID text watermarking on the Gemini API —
+# API text output is no longer watermarked and DETECT_TEXT_WATERMARK is
+# rejected on current (3.x) models. This seam stays so the detector can be
+# re-enabled if a vendor endpoint returns (e.g. Vertex AI), and fails soft
+# with the live API error until then.
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 DEFAULT_GEMINI_TIMEOUT = 30.0
 DEFAULT_GEMINI_MAX_CHARS = 1_000_000
 DEFAULT_MARKLLM_SCHEME = "kgw"
