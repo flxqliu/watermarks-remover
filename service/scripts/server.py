@@ -624,7 +624,12 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             if detector_reports:
                 report["text_detectors"] = detector_reports
         elif kind == "image":
-            dest = tmpdir / "out.png"
+            ext = Path(name).suffix
+            if not ext:
+                from image_meta import detect_format
+                fmt_name = detect_format(data)
+                ext = f".{fmt_name}" if fmt_name != "unknown" else ".png"
+            dest = _tmp_path(tmpdir, f"out{ext}")
             strip_all = not bool(options.get("keep_non_ai_metadata"))
             if "strip_all_metadata" in options:
                 strip_all = bool(options["strip_all_metadata"])
@@ -652,9 +657,29 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "av", **result}
         else:
-            dest = _tmp_path(tmpdir, f"out{Path(name).suffix}")
+            ext = Path(name).suffix
+            container_fmt = None
+            if not ext:
+                from container_meta import detect_container_format
+                container_fmt = detect_container_format(Path("input"), data)
+                ext_map = {
+                    "svg": ".svg",
+                    "pdf": ".pdf",
+                    "docx": ".docx",
+                    "xlsx": ".xlsx",
+                    "pptx": ".pptx",
+                    "odt": ".odt",
+                    "epub": ".epub",
+                    "html": ".html",
+                    "markdown": ".md",
+                }
+                ext = ext_map.get(container_fmt, "")
+            dest = _tmp_path(tmpdir, f"out{ext}")
             result = clean_container(
-                src, dest, also_layer_a_text=bool(options.get("also_layer_a_text", True))
+                src,
+                dest,
+                fmt=container_fmt,
+                also_layer_a_text=bool(options.get("also_layer_a_text", True)),
             )
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "container", **result}
