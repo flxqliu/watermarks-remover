@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def _args(**overrides):
         rewrite_api_key=None,
         rewrite_allow_remote=False,
         rewrite_temperature=0.9,
+        rewrite_loops=1,
         chars_per_token=4.0,
         cost_per_mtok_in=0.0,
         cost_per_mtok_out=0.0,
@@ -507,6 +509,53 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
         ],
     )
     assert bench.main() == 0
+
+
+def test_worker_publishes_port_env(tmp_path, monkeypatch):
+    """A live worker publishes WATERMARKS_MARKLLM_PORT for child processes."""
+
+    class _PortWorker(_FakeWorker):
+        def __init__(self, python, script, upstream, model, timeout):
+            super().__init__(python, script, upstream, model, timeout)
+            self.port = 12345
+            os.environ["WATERMARKS_MARKLLM_PORT"] = str(self.port)
+
+        def close(self):
+            os.environ.pop("WATERMARKS_MARKLLM_PORT", None)
+
+    monkeypatch.setattr(bench, "MarkLLMWorker", _PortWorker)
+    monkeypatch.delenv("WATERMARKS_MARKLLM_PORT", raising=False)
+    b, _ = _make_bench(tmp_path, monkeypatch, no_worker=False, patch_steps=False)
+    assert os.environ.get("WATERMARKS_MARKLLM_PORT") == "12345"
+    b.close_worker()
+    assert "WATERMARKS_MARKLLM_PORT" not in os.environ
+
+
+def test_aggregate_tolerates_list_in_notes():
+    """A row whose notes contain a non-string must not crash aggregation."""
+    rows = [
+        {
+            "variant": "rewrite-paraphrase:1",
+            "kind": "rewrite",
+            "before_pos": True,
+            "after_pos": False,
+            "cleared": True,
+            "score_before": 2.0,
+            "score_after": -1.0,
+            "quality": {
+                "lexical_divergence": 0.8,
+                "length_ratio": 1.0,
+                "numbers_preserved": 1.0,
+                "tokens_in": 100,
+                "tokens_out": 100,
+            },
+            "seconds": 1.0,
+            "usd": 0.0,
+            "notes": ["clean note", ["nested", "list"], {"d": 1}],
+        }
+    ]
+    agg = aggregate(rows, [("paraphrase", 1)])
+    assert agg["rewrite-paraphrase:1"]["notes"] == ["clean note"]
 
 
 # ---------------------------------------------------------------------------

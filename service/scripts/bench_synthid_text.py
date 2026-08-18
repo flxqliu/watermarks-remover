@@ -309,6 +309,7 @@ def run_rewrite(
     base_url: str,
     strength: str,
     candidates: int,
+    max_loops: int,
     temperature: float,
     timeout: float,
     allow_remote: bool,
@@ -320,7 +321,7 @@ def run_rewrite(
 
     Returns (rewritten_text, stats). Stats carry evaluator/attempts_made/
     passed plus markllm.before/after/cleared (always present: the bench passes
-    --markllm-scheme, so MarkLLM drives the iterative rewrite loop); errors
+    --markllm-scheme, so MarkLLM drives the iterative rewrite loop). Errors
     raise RuntimeError so callers record a note.
     """
     import tempfile
@@ -348,6 +349,8 @@ def run_rewrite(
         strength,
         "--candidates",
         str(candidates),
+        "--max-loops",
+        str(max_loops),
         "--temperature",
         str(temperature),
         "--timeout",
@@ -476,6 +479,8 @@ class MarkLLMWorker:
             model,
             "--upstream-dir",
             str(upstream),
+            "--port",
+            "0",
         ]
         self._proc = subprocess.Popen(
             cmd,
@@ -494,6 +499,12 @@ class MarkLLMWorker:
                 "markllm serve did not become ready" + (f": {ready.get('error')}" if ready else ""),
             )
         self.info = ready
+        # Loopback port for OTHER processes (e.g. the rewrite subprocess's
+        # MarkLLM detector) to reuse this resident model. The benchmark's own
+        # calls go over stdin; the port is published so children can too.
+        self.port = ready.get("port")
+        if self.port is not None:
+            os.environ["WATERMARKS_MARKLLM_PORT"] = str(self.port)
 
     def _drain_stderr(self) -> None:
         for line in self._proc.stderr:
@@ -566,6 +577,7 @@ class MarkLLMWorker:
         }
 
     def close(self) -> None:
+        os.environ.pop("WATERMARKS_MARKLLM_PORT", None)
         if self._proc.poll() is None:
             try:
                 self._proc.stdin.write(json.dumps({"op": "exit"}) + "\n")
@@ -646,7 +658,9 @@ class Benchmark:
             self.python, self.script, self.upstream, text, self.args.markllm_model, DETECT_TIMEOUT
         )
 
-    def rewrite(self, text: str, strength: str, candidates: int) -> tuple[str, dict[str, Any]]:
+    def rewrite(
+        self, text: str, strength: str, candidates: int, max_loops: int = 1
+    ) -> tuple[str, dict[str, Any]]:
         a = self.args
         return run_rewrite(
             self.python,
@@ -658,6 +672,7 @@ class Benchmark:
             base_url=a.rewrite_base_url,
             strength=strength,
             candidates=candidates,
+            max_loops=max_loops,
             temperature=a.rewrite_temperature,
             timeout=REWRITE_TIMEOUT,
             allow_remote=a.rewrite_allow_remote,
@@ -989,7 +1004,9 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
                 if clear_rate is not None and mean_tokens_out
                 else None
             ),
-            "notes": sorted({n for r in group for n in r.get("notes", [])}),
+            "notes": sorted(
+                {n for r in group for n in (r.get("notes") or []) if isinstance(n, str)}
+            ),
         }
         out[variant] = entries
     return out
@@ -1147,6 +1164,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--rewrite-temperature", type=float, default=0.9)
     p.add_argument(
+        "--rewrite-loops",
+        type=int,
+        default=1,
+        help="Max evaluation rounds per rewrite; each round generates "
+        "--candidates variants and stops when one passes (default: 1)",
+    )
+    p.add_argument(
         "--chars-per-token", type=float, default=4.0, help="Cost token estimate (default: 4.0)"
     )
     p.add_argument(
@@ -1209,6 +1233,7 @@ def main() -> int:
         "rewrite_model": args.rewrite_model,
         "rewrite_base_url": args.rewrite_base_url,
         "rewrite_temperature": args.rewrite_temperature,
+        "rewrite_loops": args.rewrite_loops,
         "restamp_control": args.restamp_control,
         "chars_per_token": args.chars_per_token,
         "cost_per_mtok_in": args.cost_per_mtok_in,
@@ -1225,6 +1250,7 @@ def main() -> int:
                 f"--rewrite-model {args.rewrite_model}",
                 f"--rewrite-base-url {args.rewrite_base_url}",
                 f"--rewrite-temperature {args.rewrite_temperature}",
+                f"--rewrite-loops {args.rewrite_loops}",
                 *(["--restamp-control"] if args.restamp_control else []),
                 *(["--rewrite-allow-remote"] if args.rewrite_allow_remote else []),
                 f"--out-dir {args.out_dir}",
@@ -1294,7 +1320,7 @@ def main() -> int:
                     q.get("tokens_out", ""),
                     r.get("seconds", ""),
                     round(r.get("usd") or 0.0, 6),
-                    "; ".join(r.get("notes", [])),
+                    "; ".join(str(n) for n in r.get("notes") or []),
                 )
             )
         )

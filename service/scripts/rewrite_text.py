@@ -12,16 +12,19 @@ Env (optional):
   WATERMARKS_REWRITE_MODEL
   WATERMARKS_REWRITE_API_KEY      (env-only; never pass keys on argv)
   WATERMARKS_REWRITE_ALLOW_REMOTE (set to 1 to allow non-loopback endpoints)
-  WATERMARKS_REWRITE_CANDIDATES   (default 3; max rewrite attempts per input)
+  WATERMARKS_REWRITE_CANDIDATES   (default 1; variants generated per loop)
+  WATERMARKS_REWRITE_LOOPS        (default 1; max evaluation rounds)
 
-Rewriting is iterative and evaluation-driven: by default up to
---candidates (3) variants are generated per input, and the loop stops as soon
-as an attempt passes watermark detection. The evaluator is chosen by priority:
-MarkLLM same-config detection (when --markllm-scheme is passed) or, when no
-detector is configured, bigram-Jaccard lexical divergence (no pass/fail
-verdict — all attempts are generated and the most diverged one is selected).
-A vendor-detector seam (Google's retired SynthID-text detector) is reserved
-ahead of MarkLLM should a vendor endpoint return.
+Rewriting is iterative and evaluation-driven: each loop generates
+--candidates (default 1) variants, evaluates each, and stops as soon as an
+attempt passes watermark detection; --max-loops (default 1) caps how many
+evaluation rounds run before the best-effort variant is returned
+(WATERMARKS_REWRITE_LOOPS). The evaluator is chosen by priority: MarkLLM
+same-config detection (when --markllm-scheme is passed) or, when no detector
+is configured, bigram-Jaccard lexical divergence (no pass/fail verdict — all
+attempts are generated and the most diverged one is selected). A vendor-detector
+seam (Google's retired SynthID-text detector) is reserved ahead of MarkLLM
+should a vendor endpoint return.
 
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
@@ -50,7 +53,8 @@ from text_detectors import MarkLLMTextDetector
 from text_unicode import clean_text
 
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
-DEFAULT_CANDIDATES = 3
+DEFAULT_CANDIDATES = 1
+DEFAULT_MAX_LOOPS = 1
 
 PROMPTS = {
     "paraphrase": (
@@ -345,6 +349,7 @@ def rewrite(
     layer_a_after: bool,
     temperature: float,
     candidates: int,
+    max_loops: int = 1,
     allow_remote: bool = False,
     reasoning_effort: str | None = None,
     markllm_scheme: str | None = None,
@@ -395,47 +400,59 @@ def rewrite(
 
     _check_remote(base_url, allow_remote)
 
-    n = max(1, candidates)
-    info["candidates"] = n
+    n_cands = max(1, candidates)
+    n_loops = max(1, max_loops)
+    info["candidates"] = n_cands
+    info["max_loops"] = n_loops
     evaluator_name, evaluator = _pick_evaluator(markllm_detector)
     info["evaluator"] = evaluator_name
 
-    # Iterative rewrite: generate one variant, evaluate it, and stop as soon
-    # as an attempt passes evaluation; never exceed n attempts. When no
-    # detector is configured the evaluator is lexical divergence, which has no
-    # pass/fail verdict, so all attempts are generated and the most diverged
-    # one is selected (the original --candidates behavior).
+    # Iterative rewrite: each loop generates --candidates variants and
+    # evaluates them, stopping as soon as one passes; --max-loops caps how
+    # many evaluation rounds run before the best-effort variant is returned.
+    # When no detector is configured the evaluator is lexical divergence,
+    # which has no pass/fail verdict, so every attempt is generated and the
+    # most diverged one is selected (the original --candidates behavior).
     attempts: list[tuple[str, dict]] = []
     passed: bool | None = None
-    for _ in range(n):
-        cand = _generate_once(
-            backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
-        )
-        cand_stats: dict | None = None
-        if layer_a_after:
-            cand, cand_stats = clean_text(cand)
-        divergence = _lexical_divergence(text, cand)
-        if evaluator is None:
-            evaluation: dict = {"evaluator": "lexical-divergence", "score": round(divergence, 4)}
-        else:
-            evaluation = _safe_detect(evaluator, cand)
-        verdict = evaluation.get("is_watermarked")
-        passed_i: bool | None = True if verdict is False else (False if verdict is True else None)
-        attempts.append(
-            (
-                cand,
-                {
-                    "lexical_divergence": round(divergence, 4),
-                    "selection_score": round(divergence, 4),
-                    "selected": False,
-                    "passed": passed_i,
-                    "evaluation": evaluation,
-                    "layer_a_after": cand_stats,
-                },
+    for loop in range(n_loops):
+        for _ in range(n_cands):
+            cand = _generate_once(
+                backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
             )
-        )
-        if passed_i is True:
-            passed = True
+            cand_stats: dict | None = None
+            if layer_a_after:
+                cand, cand_stats = clean_text(cand)
+            divergence = _lexical_divergence(text, cand)
+            if evaluator is None:
+                evaluation: dict = {
+                    "evaluator": "lexical-divergence",
+                    "score": round(divergence, 4),
+                }
+            else:
+                evaluation = _safe_detect(evaluator, cand)
+            verdict = evaluation.get("is_watermarked")
+            passed_i: bool | None = (
+                True if verdict is False else (False if verdict is True else None)
+            )
+            attempts.append(
+                (
+                    cand,
+                    {
+                        "loop": loop,
+                        "lexical_divergence": round(divergence, 4),
+                        "selection_score": round(divergence, 4),
+                        "selected": False,
+                        "passed": passed_i,
+                        "evaluation": evaluation,
+                        "layer_a_after": cand_stats,
+                    },
+                )
+            )
+            if passed_i is True:
+                passed = True
+                break
+        if passed is True:
             break
 
     if evaluator is not None and passed is None:
@@ -505,7 +522,10 @@ def rewrite(
             "keys used at generation; it does not certify a vendor detector."
         )
 
-    eprint(f"note: evaluator={evaluator_name} attempts={len(attempts)}/{n} passed={passed}")
+    eprint(
+        f"note: evaluator={evaluator_name} attempts={len(attempts)}/"
+        f"{n_cands * n_loops} loops={n_loops} passed={passed}"
+    )
     return out, info
 
 
@@ -558,9 +578,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidates",
         type=int,
         default=_env_int("WATERMARKS_REWRITE_CANDIDATES", DEFAULT_CANDIDATES),
-        help="Max rewrite attempts (variants) per input; each attempt is one "
+        help="Variants generated per loop iteration; each variant is one "
         "rewrite + one evaluation, and the loop stops as soon as an attempt "
         f"passes (default: {DEFAULT_CANDIDATES}; WATERMARKS_REWRITE_CANDIDATES)",
+    )
+    p.add_argument(
+        "--max-loops",
+        type=int,
+        default=_env_int("WATERMARKS_REWRITE_LOOPS", DEFAULT_MAX_LOOPS),
+        help="Max evaluation rounds; each round generates --candidates "
+        "variants and stops when one passes. Raising this retries new "
+        f"variants until an evaluation passes (default: {DEFAULT_MAX_LOOPS}; "
+        "WATERMARKS_REWRITE_LOOPS)",
     )
     p.add_argument(
         "--no-layer-a-after",
@@ -624,6 +653,7 @@ def main() -> int:
             layer_a_after=not args.no_layer_a_after,
             temperature=args.temperature,
             candidates=args.candidates,
+            max_loops=args.max_loops,
             allow_remote=allow_remote,
             reasoning_effort=(None if args.reasoning_effort == "off" else args.reasoning_effort),
             markllm_scheme=args.markllm_scheme,

@@ -167,13 +167,19 @@ def _two_candidates(monkeypatch):
     monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
 
 
-def test_default_candidates_is_three(monkeypatch):
+def test_default_candidates_and_max_loops_are_one(monkeypatch):
     monkeypatch.delenv("WATERMARKS_REWRITE_CANDIDATES", raising=False)
-    assert rewrite_text.DEFAULT_CANDIDATES == 3
+    monkeypatch.delenv("WATERMARKS_REWRITE_LOOPS", raising=False)
+    assert rewrite_text.DEFAULT_CANDIDATES == 1
+    assert rewrite_text.DEFAULT_MAX_LOOPS == 1
     args = rewrite_text.build_parser().parse_args(["x.txt"])
-    assert args.candidates == 3
+    assert args.candidates == 1
+    assert args.max_loops == 1
     monkeypatch.setenv("WATERMARKS_REWRITE_CANDIDATES", "5")
-    assert rewrite_text.build_parser().parse_args(["x.txt"]).candidates == 5
+    monkeypatch.setenv("WATERMARKS_REWRITE_LOOPS", "7")
+    args = rewrite_text.build_parser().parse_args(["x.txt"])
+    assert args.candidates == 5
+    assert args.max_loops == 7
 
 
 def test_evaluator_is_lexical_without_markllm_scheme(monkeypatch):
@@ -255,10 +261,13 @@ def test_loop_stops_on_first_passing_attempt(monkeypatch):
     monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: "alpha beta gamma delta")
     out, info = rewrite(
         "the cat sat on the mat",
-        **_rewrite_candidates_kwargs(candidates=3, markllm_scheme="kgw", markllm_dir="/x"),
+        **_rewrite_candidates_kwargs(
+            candidates=3, max_loops=3, markllm_scheme="kgw", markllm_dir="/x"
+        ),
     )
     assert out == "alpha beta gamma delta"
     assert info["candidates"] == 3
+    assert info["max_loops"] == 3
     assert info["attempts_made"] == 1  # passed on the first attempt
     assert info["passed"] is True
     assert info["candidate_scores"][0]["selected"] is True
@@ -292,6 +301,7 @@ def test_loop_exhausts_max_attempts_without_pass(monkeypatch):
     )
     assert out == "ccc"  # best-effort: lowest watermark score wins
     assert info["attempts_made"] == 3
+    assert info["max_loops"] == 1
     assert info["passed"] is False
     assert all(c["passed"] is False for c in info["candidate_scores"])
     selected = [c for c in info["candidate_scores"] if c["selected"]]
@@ -299,6 +309,81 @@ def test_loop_exhausts_max_attempts_without_pass(monkeypatch):
     assert selected[0]["evaluation"]["score"] == 1.0
     assert info["markllm"]["cleared"] is False
     assert "Exhausted" in info["note"]
+
+
+def test_max_loops_retry_new_variants_until_pass(monkeypatch):
+    class _PassOnThird:
+        name = "markllm"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def available(self):
+            return True
+
+        def detect(self, text):
+            wm = text in ("aaa", "bbb")
+            score = {"aaa": 3.0, "bbb": 2.0}.get(text, 0.5)
+            return {
+                "detector": "markllm",
+                "available": True,
+                "is_watermarked": wm,
+                "score": score,
+            }
+
+    monkeypatch.setattr(rewrite_text, "MarkLLMTextDetector", _PassOnThird)
+    texts = iter(["aaa", "bbb", "ccc"])
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
+    out, info = rewrite(
+        "the cat sat on the mat",
+        **_rewrite_candidates_kwargs(
+            candidates=1, max_loops=3, markllm_scheme="kgw", markllm_dir="/x"
+        ),
+    )
+    assert out == "ccc"  # loops retry new variants until an evaluation passes
+    assert info["max_loops"] == 3
+    assert info["attempts_made"] == 3
+    assert info["passed"] is True
+    assert [c["loop"] for c in info["candidate_scores"]] == [0, 1, 2]
+    assert [c["passed"] for c in info["candidate_scores"]] == [False, False, True]
+    assert info["candidate_scores"][2]["selected"] is True
+
+
+def test_max_loops_exhausted_across_loops(monkeypatch):
+    class _NeverClears:
+        name = "markllm"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def available(self):
+            return True
+
+        def detect(self, text):
+            score = {"a": 4.0, "b": 3.0, "c": 2.0, "d": 1.0}.get(text, 2.5)
+            return {
+                "detector": "markllm",
+                "available": True,
+                "is_watermarked": True,
+                "score": score,
+            }
+
+    monkeypatch.setattr(rewrite_text, "MarkLLMTextDetector", _NeverClears)
+    texts = iter(["a", "b", "c", "d"])
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
+    out, info = rewrite(
+        "the cat sat on the mat",
+        **_rewrite_candidates_kwargs(
+            candidates=2, max_loops=2, markllm_scheme="kgw", markllm_dir="/x"
+        ),
+    )
+    assert info["max_loops"] == 2
+    assert info["attempts_made"] == 4  # 2 loops x 2 candidates
+    assert info["passed"] is False
+    assert out == "d"  # best-effort: lowest watermark score across all loops
+    assert [c["loop"] for c in info["candidate_scores"]] == [0, 0, 1, 1]
+    selected = [c for c in info["candidate_scores"] if c["selected"]]
+    assert len(selected) == 1 and selected[0]["evaluation"]["score"] == 1.0
 
 
 def test_evaluator_fail_soft_verdict_unavailable(monkeypatch):
@@ -341,6 +426,7 @@ def test_single_candidate_attempt(monkeypatch):
     )
     assert out == "REWRITTEN OUTPUT"
     assert info["candidates"] == 1
+    assert info["max_loops"] == 1
     assert info["attempts_made"] == 1
     assert info["passed"] is True
     assert len(info["candidate_scores"]) == 1

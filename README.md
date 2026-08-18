@@ -512,19 +512,22 @@ MARKLLM_DIR=~/MarkLLM \
 ```
 
 **Detection-guided iterative rewriting:** Layer B now rewrites iteratively and
-stops as soon as an attempt passes evaluation. By default up to `--candidates`
-**3** variants are attempted per input (`WATERMARKS_REWRITE_CANDIDATES`
-overrides); each attempt is one rewrite call plus one evaluation, and the loop
-exits early on the first attempt the evaluator reports as not watermarked (so a
-typical clean rewrite costs one attempt). The evaluator is chosen by priority:
+stops as soon as an attempt passes evaluation. Each evaluation round generates
+`--candidates` variants (default **1**, `WATERMARKS_REWRITE_CANDIDATES`)
+and `--max-loops` caps how many rounds run before the best-effort variant is
+returned (default **1**, `WATERMARKS_REWRITE_LOOPS`). Each variant is one
+rewrite call plus one evaluation, and a round exits early on the first attempt
+the evaluator reports as not watermarked — so raising `--max-loops` retries
+new variants until an evaluation passes (a typical clean rewrite costs one
+attempt). The evaluator is chosen by priority:
 
 1. **MarkLLM** — same-config research detection, when `--markllm-scheme` is
    passed (with `--markllm-dir`). A vendor-detector slot is reserved above
    MarkLLM for Google's SynthID-text detector, which Google retired on its API
    in Aug 2026 — a future vendor endpoint can plug in there.
 2. **bigram-Jaccard lexical divergence** — when no detector is configured; no
-   pass/fail verdict, so all `--candidates` variants are generated and the
-   most lexically diverged one is selected (the original behavior).
+   pass/fail verdict, so every attempt is generated and the most lexically
+   diverged one is selected (the original behavior).
 
 `--json-stats` reports the evaluator, attempts made, pass/fail, and per-attempt
 records:
@@ -532,7 +535,8 @@ records:
 ```json
 {
   "evaluator": "markllm",
-  "candidates": 3,
+  "candidates": 1,
+  "max_loops": 2,
   "attempts_made": 2,
   "passed": true,
   "candidate_scores": [
@@ -878,18 +882,21 @@ make smoke                          # quick CLI smoke on fixtures
 
 ### Unreleased — detection-guided iterative Layer B rewriting
 
-- **Layer B rewriting is now iterative and evaluation-driven**: default
-  `--candidates` 3 attempts per input (`WATERMARKS_REWRITE_CANDIDATES`),
-  stopping as soon as an attempt passes watermark detection. Evaluator
-  priority: MarkLLM (when `--markllm-scheme`) > bigram-Jaccard lexical
-  divergence (fallback; a vendor-detector seam is reserved for a future
-  SynthID-text endpoint).
+- **Layer B rewriting is now iterative and evaluation-driven**: each round
+  generates `--candidates` variants (default 1,
+  `WATERMARKS_REWRITE_CANDIDATES`) and `--max-loops` (default 1,
+  `WATERMARKS_REWRITE_LOOPS`) caps the evaluation rounds, stopping as soon
+  as an attempt passes watermark detection. Evaluator priority: MarkLLM (when
+  `--markllm-scheme`) > bigram-Jaccard lexical divergence (fallback; a
+  vendor-detector seam is reserved for a future SynthID-text endpoint).
 - `rewrite_text.py --json-stats` now reports `evaluator` /
-  `attempts_made` / `passed` and per-attempt `candidate_scores` records
-  (`passed`, `evaluation`); `markllm.before/after/cleared` is unchanged.
+  `max_loops` / `attempts_made` / `passed` and per-attempt
+  `candidate_scores` records (`loop`, `passed`, `evaluation`);
+  `markllm.before/after/cleared` is unchanged.
 - **SynthID-text benchmark**: default variants `paraphrase:3`; report and CSV
   now carry attempts per document (`mean_attempts`, `att` column;
-  `attempts` / `evaluator` / `passed` columns).
+  `attempts` / `evaluator` / `passed` columns); `--rewrite-loops`
+  mirrors `--max-loops`.
 
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
 

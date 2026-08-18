@@ -55,18 +55,21 @@ here is MarkLLM same-config only. A vendor tier can be re-added if Google
 exposes detection again (e.g. via Vertex AI).
 
 **How variants map to rewrites:** each <strength>:<candidates> variant runs
-the Layer B rewrite with candidates as the **max attempts per input**. The
-rewrite is iterative: it generates one variant, runs MarkLLM detection
-(same-config) on it, and stops as soon as an attempt is not watermarked — so a
-variant usually costs fewer rewrites than its candidate count, and
-paraphrase:3 means "keep trying up to 3 times, stop on the first pass".
+the Layer B rewrite with candidates as the **variants per evaluation round**;
+`--rewrite-loops` (default 1, mirrors `--max-loops` /
+`WATERMARKS_REWRITE_LOOPS`) sets how many rounds run before the best-effort
+variant is returned. The rewrite is iterative: it generates a variant, runs
+MarkLLM detection (same-config) on it, and stops as soon as an attempt is not
+watermarked — so a variant usually costs fewer rewrites than its candidate
+count, and paraphrase:3 means "try up to 3 variants, stop on the first pass"
+(raise `--rewrite-loops` to keep retrying new variants until one passes).
 The report's att column (and mean_attempts in results.json / attempts in
 results.csv) records the actual attempts per document.
 
 Cost warning: with MarkLLM as the evaluator, each attempt also costs one
-MarkLLM detection — up to candidates detections per input. The persistent
-serve worker (default) keeps the model loaded so detections are cheap; the
---no-worker one-shot path re-loads the model per detection.
+MarkLLM detection — up to (candidates x loops) detections per input. The
+persistent serve worker (default) keeps the model loaded so detections are
+cheap; the --no-worker one-shot path re-loads the model per detection.
 
 Cost modeling: --cost-per-mtok-in 0.30 --cost-per-mtok-out 1.20 (example
 prices) attaches an estimated USD figure per row; token counts are
