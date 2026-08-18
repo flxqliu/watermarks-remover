@@ -14,8 +14,6 @@ import sys
 import zipfile
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -83,7 +81,7 @@ def test_double_quoted_relationships_still_prune_correctly():
             "word/document.xml",
             '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
         )
-        zf.writestr("customXml/item1.xml", '<root>c2pa contentcredentials</root>')
+        zf.writestr("customXml/item1.xml", "<root>c2pa contentcredentials</root>")
         zf.writestr(
             "word/_rels/document.xml.rels",
             """<?xml version="1.0"?>
