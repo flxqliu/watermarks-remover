@@ -49,6 +49,13 @@ RUN curl -fsSL -o /tmp/c2patool.tar.gz \
 
 COPY scripts /app/scripts
 
+# COPY preserves the source modes, so a build host with a restrictive umask
+# (e.g. 027) lands these as 0640/0750 root:root -- unreadable and untraversable
+# for the unprivileged runtime user below, and the image only fails at
+# container start. Normalize explicitly instead of inheriting the builder's
+# umask: world-readable everywhere, execute bit for directories only (#131).
+RUN chmod -R a+rX /app/scripts
+
 RUN python3 -m pip install --no-cache-dir "pip==26.2.1"
 
 # Unprivileged runtime user. The service only reads request bodies and writes
