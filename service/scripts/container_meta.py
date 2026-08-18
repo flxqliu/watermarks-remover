@@ -898,12 +898,55 @@ def inspect_pptx(data: bytes) -> tuple[bool, bool, list[str], dict]:
     return _inspect_ooxml_zip(data, "pptx")
 
 
+_XML_CHAR_REF_RE = re.compile(r"&#(?:x([0-9A-Fa-f]+)|([0-9]+));|&(amp|lt|gt|quot|apos);")
+_XML_NAMED_ENTITIES = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'"}
+
+
+def _decode_xml_entities(s: str) -> str:
+    """Decode what a conforming XML parser would resolve: numeric character
+    references and the five predefined entities. A watermark carrier encoded as
+    ``&#x200B;`` otherwise reaches Layer A as nine ASCII characters and survives
+    cleaning, because the parser in Word/Writer decodes the entity afterwards
+    (#129). Anything a parser would leave literal stays literal here.
+    """
+
+    def _sub(m: re.Match[str]) -> str:
+        hex_digits, decimal, named = m.group(1), m.group(2), m.group(3)
+        if named:
+            return _XML_NAMED_ENTITIES[named]
+        codepoint = int(hex_digits, 16) if hex_digits else int(decimal)
+        if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return m.group(0)  # not a character; leave for the real parser to reject
+        try:
+            return chr(codepoint)
+        except ValueError:
+            return m.group(0)
+
+    return _XML_CHAR_REF_RE.sub(_sub, s)
+
+
+def _reencode_xml_text(s: str) -> str:
+    """Escape text content the way a serializer would: ``&``, ``<`` and ``>``.
+
+    ``>`` is legal literally in text content but re-escaping it is a semantic
+    no-op, and ``<``/``&`` must be escaped anyway — so a decode/clean/re-encode
+    round trip is stable for any well-formed input.
+    """
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _scrub_text_runs(
     xml_text: str, open_re: re.Pattern[str], close_re: re.Pattern[str]
 ) -> tuple[str, int, int]:
     """Run Layer A over the text runs delimited by open_re/close_re.
 
-    Shared by the DOCX/XLSX/PPTX/ODT body scrubs. Linear scan (see
+    XML character references are decoded first (a carrier written as
+    ``&#x200B;`` otherwise reaches Layer A as nine ASCII characters and
+    survives cleaning, only to be resurrected by the parser in Word/Writer —
+    #129) and the surviving text is re-encoded on the way out, so the round
+    trip is stable for any well-formed input.
+
+    Shared by the DOCX/XLSX/PPTX body scrubs. Linear scan (see
     _iter_tag_blocks) - the previous "(<tag>)(.*?)(</tag>)" lazy pattern was
     quadratic on a run of unclosed opening tags.
     """
@@ -917,7 +960,7 @@ def _scrub_text_runs(
         open_tag = xml_text[os_:oe]
         inner = xml_text[oe:cs_]
         close_tag = xml_text[cs_:ce]
-        new_inner, stats = clean_text(inner)
+        new_inner, stats = clean_text(_decode_xml_entities(inner))
         if not (stats["removed_count"] or stats["replaced_count"]):
             continue
         removed += stats["removed_count"]
@@ -925,7 +968,7 @@ def _scrub_text_runs(
         if (new_inner[:1].isspace() or new_inner[-1:].isspace()) and "xml:space" not in open_tag:
             open_tag = open_tag[:-1] + ' xml:space="preserve">'
         out.append(xml_text[last:os_])
-        out.append(open_tag + new_inner + close_tag)
+        out.append(open_tag + _reencode_xml_text(new_inner) + close_tag)
         last = ce
     out.append(xml_text[last:])
     return "".join(out), removed, replaced
@@ -957,9 +1000,47 @@ def _scrub_odt_text(xml_text: str) -> tuple[str, int, int]:
 
     ``text:span``/``text:tab``/``text:s`` children live inside the paragraph,
     so cleaning the paragraph content covers the visible text. The markup
-    itself is untouched.
+    itself is untouched: entities are decoded and re-encoded per text segment
+    only — a whole-paragraph round trip would escape the nested markup.
+    Linear scan (see _iter_tag_blocks).
     """
-    return _scrub_text_runs(xml_text, re.compile(r"<text:p\b[^>]*>"), re.compile(r"</text:p>"))
+    from text_unicode import clean_text  # local import to avoid cycles
+
+    removed = 0
+    replaced = 0
+    out = []
+    last = 0
+    for os_, oe, cs_, ce in _iter_tag_blocks(
+        xml_text, re.compile(r"<text:p\b[^>]*>"), re.compile(r"</text:p>")
+    ):
+        open_tag = xml_text[os_:oe]
+        inner = xml_text[oe:cs_]
+        close_tag = xml_text[cs_:ce]
+        parts = re.split(r"(<[^>]+>)", inner)
+        new_parts: list[str] = []
+        changed = False
+        for segment in parts:
+            if not segment or segment.startswith("<"):
+                new_parts.append(segment)
+                continue
+            new_segment, stats = clean_text(_decode_xml_entities(segment))
+            if stats["removed_count"] or stats["replaced_count"]:
+                removed += stats["removed_count"]
+                replaced += stats["replaced_count"]
+                changed = True
+                new_parts.append(_reencode_xml_text(new_segment))
+            else:
+                new_parts.append(segment)
+        if not changed:
+            continue
+        new_para = "".join(new_parts)
+        if (new_para[:1].isspace() or new_para[-1:].isspace()) and "xml:space" not in open_tag:
+            open_tag = open_tag[:-1] + ' xml:space="preserve">'
+        out.append(xml_text[last:os_])
+        out.append(open_tag + new_para + close_tag)
+        last = ce
+    out.append(xml_text[last:])
+    return "".join(out), removed, replaced
 
 
 def _prune_dangling_relationships(
