@@ -570,6 +570,50 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$(pwd):/data" \
   watermarks-remover-markllm detect /data/wm.txt --scheme kgw --json
 ```
 
+## Optional SynthID-text removal benchmark
+
+[`bench_synthid_text.py`](service/scripts/bench_synthid_text.py) measures how
+effectively a Layer B rewrite clears SynthID-text-class watermarks and at
+what cost. It generates watermarked + unwatermarked samples with the MarkLLM
+SynthID scheme (same-config detection, sanity-gated), runs your rewrite
+variants (strength × candidates) plus controls (no-removal, Layer-A-only,
+optional re-stamp check), and writes a shareable `report.md` /
+`results.json` / `results.csv`. Full guide:
+[`docs/synthid-text-benchmark.md`](docs/synthid-text-benchmark.md).
+
+Requires a MarkLLM checkout (`setup_markllm.sh` / `MARKLLM_DIR`) and a
+rewrite backend. **The rewriting model is an LLM you configure** — the same
+`rewrite_text.py` backend the skill uses. MarkLLM's default
+`facebook/opt-1.3b` (`--markllm-model`) is only the watermark
+generator/detector; it never rewrites. Configure the rewrite model via env
+vars or benchmark flags (they mirror the
+[config table](#configuration-env-vars-for-docker-compose) above):
+
+| Env var | Benchmark flag | Default | Meaning |
+| --- | --- | --- | --- |
+| `WATERMARKS_REWRITE_BACKEND` | `--rewrite-backend` | `ollama` | `ollama` or `openai-compatible` |
+| `WATERMARKS_REWRITE_MODEL` | `--rewrite-model` | *(required)* | The LLM that performs the rewrite (e.g. `llama3.2`, `deepseek-v4-flash`) |
+| `WATERMARKS_REWRITE_BASE_URL` | `--rewrite-base-url` | `http://127.0.0.1:11434` | Endpoint; the Ollama default is loopback |
+| `WATERMARKS_REWRITE_API_KEY` | `--rewrite-api-key` | — | API key (env-only in the child process, never argv) |
+| `WATERMARKS_REWRITE_ALLOW_REMOTE=1` | `--rewrite-allow-remote` | off | Required to send content to non-loopback endpoints |
+
+```bash
+# Ollama (loopback):
+python3 service/scripts/bench_synthid_text.py --markllm-dir ~/MarkLLM \
+  --rewrite-backend ollama --rewrite-model llama3.2
+
+# OpenAI-compatible API (remote):
+WATERMARKS_REWRITE_API_KEY=... python3 service/scripts/bench_synthid_text.py \
+  --markllm-dir ~/MarkLLM --rewrite-backend openai-compatible \
+  --rewrite-model deepseek-v4-flash --rewrite-base-url https://api.deepseek.com \
+  --rewrite-allow-remote
+```
+
+Use a **non-origin model** for rewriting (do not rewrite with the same
+watermarked model that generated the text) or the rewrite can re-stamp the
+output; `--restamp-control` measures this. Setting `WATERMARKS_GEMINI_API_KEY`
+adds Google's official SynthID-text detector as an additional vendor check.
+
 ## Optional MarkDiffusion image-watermark harness
 
 For **controlled experiments on images**, an optional external harness wraps
