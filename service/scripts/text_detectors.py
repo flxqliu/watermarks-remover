@@ -59,6 +59,37 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _worker_port() -> int | None:
+    """Loopback port of a resident MarkLLM serve worker (WATERMARKS_MARKLLM_PORT)."""
+    raw = os.environ.get("WATERMARKS_MARKLLM_PORT", "").strip()
+    if not raw:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def _detect_via_worker(port: int, text: str, timeout: float) -> dict[str, Any]:
+    """One detect request to a resident MarkLLM serve worker over loopback TCP."""
+    import socket as _socket
+
+    with _socket.create_connection(("127.0.0.1", port), timeout=timeout) as conn:
+        conn.sendall((json.dumps({"op": "detect", "text": text}) + "\n").encode("utf-8"))
+        f = conn.makefile("r", encoding="utf-8")
+        line = f.readline()
+    if not line:
+        raise RuntimeError("worker closed without a response")
+    try:
+        resp = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"worker emitted non-JSON: {line[:120]!r}") from e
+    if not isinstance(resp, dict) or not resp.get("ok"):
+        raise RuntimeError(resp.get("error") or "worker detect failed")
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # MarkLLM (open-source research harness: KGW / SynthID schemes)
 # ---------------------------------------------------------------------------
@@ -142,12 +173,31 @@ class MarkLLMTextDetector:
             report["error"] = "MARKLLM_DIR not set"
             return report
 
-        script = Path(__file__).resolve().parent / "detect_text_watermark.py"
         timeout = (
             self._timeout
             if self._timeout is not None
             else _env_float("WATERMARKS_MARKLLM_TIMEOUT", DEFAULT_MARKLLM_TIMEOUT)
         )
+
+        # Reuse a resident serve worker (WATERMARKS_MARKLLM_PORT) when one is
+        # up — avoids a ~20s torch+model cold start per detect. Falls back to
+        # a one-shot subprocess if the worker is unreachable.
+        port = _worker_port()
+        if port is not None:
+            try:
+                resp = _detect_via_worker(port, text, timeout)
+                return {
+                    **report,
+                    "available": True,
+                    "is_watermarked": bool(resp["is_watermarked"]),
+                    "score": resp.get("score"),
+                    "threshold": resp.get("threshold"),
+                    "note": "detected via resident MarkLLM serve worker",
+                }
+            except Exception as e:
+                report["error"] = f"MarkLLM worker detect failed ({e}); falling back"
+
+        script = Path(__file__).resolve().parent / "detect_text_watermark.py"
         venv_python = _venv_python(Path(upstream).expanduser().resolve())
         python = str(venv_python) if venv_python is not None else sys.executable
 

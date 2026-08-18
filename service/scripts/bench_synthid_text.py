@@ -471,6 +471,8 @@ class MarkLLMWorker:
             model,
             "--upstream-dir",
             str(upstream),
+            "--port",
+            "0",
         ]
         self._proc = subprocess.Popen(
             cmd,
@@ -489,6 +491,11 @@ class MarkLLMWorker:
                 "markllm serve did not become ready" + (f": {ready.get('error')}" if ready else ""),
             )
         self.info = ready
+        # Loopback port for OTHER processes (e.g. the rewrite subprocess's
+        # MarkLLM detector) to reuse this resident model.
+        self.port = ready.get("port")
+        if self.port is not None:
+            os.environ["WATERMARKS_MARKLLM_PORT"] = str(self.port)
 
     def _drain_stderr(self) -> None:
         for line in self._proc.stderr:
@@ -561,6 +568,7 @@ class MarkLLMWorker:
         }
 
     def close(self) -> None:
+        os.environ.pop("WATERMARKS_MARKLLM_PORT", None)
         if self._proc.poll() is None:
             try:
                 self._proc.stdin.write(json.dumps({"op": "exit"}) + "\n")

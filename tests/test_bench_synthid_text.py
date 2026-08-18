@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -490,6 +491,26 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
         ],
     )
     assert bench.main() == 0
+
+
+def test_worker_publishes_port_env(tmp_path, monkeypatch):
+    """A live worker publishes WATERMARKS_MARKLLM_PORT for child processes."""
+
+    class _PortWorker(_FakeWorker):
+        def __init__(self, python, script, upstream, model, timeout):
+            super().__init__(python, script, upstream, model, timeout)
+            self.port = 12345
+            os.environ["WATERMARKS_MARKLLM_PORT"] = str(self.port)
+
+        def close(self):
+            os.environ.pop("WATERMARKS_MARKLLM_PORT", None)
+
+    monkeypatch.setattr(bench, "MarkLLMWorker", _PortWorker)
+    monkeypatch.delenv("WATERMARKS_MARKLLM_PORT", raising=False)
+    b, _ = _make_bench(tmp_path, monkeypatch, no_worker=False, patch_steps=False)
+    assert os.environ.get("WATERMARKS_MARKLLM_PORT") == "12345"
+    b.close_worker()
+    assert "WATERMARKS_MARKLLM_PORT" not in os.environ
 
 
 # ---------------------------------------------------------------------------
