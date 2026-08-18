@@ -11,10 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from av_meta import AV_EXTS, detect_av_format
 from container_meta import detect_container_format
 from image_meta import detect_format as detect_image_format
 
-Kind = Literal["text", "image", "container", "unknown"]
+Kind = Literal["text", "image", "container", "av", "unknown"]
 
 #: Bytes read for header-only sniffing. Every supported image/container
 #: magic lives in the prefix; zip-based containers (docx/odt/...) need the
@@ -83,8 +84,12 @@ def classify_bytes(data: bytes, suffix: str | None = None) -> Kind:
         return "container"
     if ext in TEXT_EXTS:
         return "text"
+    if ext in AV_EXTS:
+        return "av"
     if detect_image_format(data) in ("png", "jpeg", "webp", "avif", "heic", "bmp", "gif", "tiff"):
         return "image"
+    if detect_av_format(data) != "unknown":
+        return "av"
     if data:
         sniff_path = Path("input") if not ext else Path(f"input{ext}")
         if detect_container_format(sniff_path, data) != "unknown":
@@ -108,10 +113,14 @@ def classify(path: Path) -> Kind:
         return "container"
     if ext in TEXT_EXTS:
         return "text"
+    if ext in AV_EXTS:
+        return "av"
     with path.open("rb") as fh:
         head = fh.read(CLASSIFY_HEADER_BYTES)
     if detect_image_format(head) in ("png", "jpeg", "webp", "avif", "heic", "bmp", "gif", "tiff"):
         return "image"
+    if detect_av_format(head) != "unknown":
+        return "av"
     if head:
         data = path.read_bytes() if head[:4] == b"PK\x03\x04" else head
         sniff_path = Path("input") if not ext else Path(f"input{ext}")
