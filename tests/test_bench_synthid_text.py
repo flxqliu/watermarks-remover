@@ -488,3 +488,23 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
         ],
     )
     assert bench.main() == 0
+
+
+def test_run_cmd_no_rlimit_preexec(monkeypatch):
+    """_run_cmd must not apply the common 4 GiB RLIMIT_AS (kills torch/CUDA)."""
+    import subprocess as _sp
+
+    calls = {}
+
+    class _FakePopen:
+        def __init__(self, *a, **k):
+            calls["kwargs"] = k
+            self.returncode = 0
+            self.stdout = "{}"
+            self.stderr = ""
+
+    monkeypatch.setattr(_sp, "run", _FakePopen)
+    import bench_synthid_text as b
+
+    b._run_cmd(["echo", "hi"], timeout=5)
+    assert "preexec_fn" not in calls["kwargs"]

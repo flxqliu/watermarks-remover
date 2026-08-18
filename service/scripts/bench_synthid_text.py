@@ -47,7 +47,7 @@ from urllib.parse import urlparse
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from common import eprint, subprocess_preexec_fn  # noqa: E402
+from common import eprint  # noqa: E402
 from rewrite_text import _lexical_divergence  # noqa: E402
 from text_detectors import GeminiSynthIDTextDetector  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
@@ -143,12 +143,16 @@ def _repo_commit() -> str | None:
 
 
 def _run_cmd(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    # No RLIMIT_AS here: every child is the MarkLLM harness or rewrite_text.py,
+    # both of which load torch and need a large address space (the common
+    # 4 GiB child cap kills CUDA init and the 5 GB fp32 model). This matches
+    # text_detectors.py, which applies no address-space cap to MarkLLM by
+    # default.
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
-        preexec_fn=subprocess_preexec_fn,
         check=False,
     )
 
