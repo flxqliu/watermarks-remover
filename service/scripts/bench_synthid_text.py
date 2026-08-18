@@ -323,6 +323,10 @@ def run_rewrite(
     env = dict(os.environ)
     if api_key:
         env["WATERMARKS_REWRITE_API_KEY"] = api_key
+    # The benchmark runs its own Gemini before/after per row; without this,
+    # the rewrite subprocess would also run per-candidate Gemini+MarkLLM
+    # detections (candidates > 1), each a cold-start model load.
+    env.pop("WATERMARKS_GEMINI_API_KEY", None)
     cmd = [
         python,
         str(script),
