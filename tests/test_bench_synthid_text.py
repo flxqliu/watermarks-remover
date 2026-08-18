@@ -465,3 +465,26 @@ def test_main_rejects_remote_rewrite_without_flag(tmp_path, monkeypatch, capsys)
         ),
     )
     assert bench.main() == 2
+
+
+def test_main_allow_remote_from_env(tmp_path, monkeypatch):
+    """WATERMARKS_REWRITE_ALLOW_REMOTE=1 satisfies the remote-URL check."""
+    (tmp_path / "markllm" / "watermark").mkdir(parents=True)
+    monkeypatch.setenv("WATERMARKS_REWRITE_ALLOW_REMOTE", "1")
+    monkeypatch.setattr(bench, "Benchmark", _FakeBench)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_synthid_text.py",
+            "--markllm-dir",
+            str(tmp_path / "markllm"),
+            "--rewrite-model",
+            "m",
+            "--rewrite-base-url",
+            "http://api.example.com",
+            "--out-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert bench.main() == 0

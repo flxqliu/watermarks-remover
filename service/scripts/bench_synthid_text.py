@@ -975,7 +975,13 @@ def main() -> int:
     p.add_argument(
         "--rewrite-api-key", default=None, help="API key (env-only in child; never argv)"
     )
-    p.add_argument("--rewrite-allow-remote", action="store_true")
+    p.add_argument(
+        "--rewrite-allow-remote",
+        action="store_true",
+        default=os.environ.get("WATERMARKS_REWRITE_ALLOW_REMOTE", "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        help="Send content to non-loopback rewrite endpoints (default: $WATERMARKS_REWRITE_ALLOW_REMOTE)",
+    )
     p.add_argument("--rewrite-temperature", type=float, default=0.9)
     p.add_argument(
         "--chars-per-token", type=float, default=4.0, help="Cost token estimate (default: 4.0)"
