@@ -943,6 +943,7 @@ MIT — see [LICENSE](LICENSE).
 - [THU-BPM/MarkLLM](https://github.com/THU-BPM/MarkLLM) (unified toolkit for evaluating LLM watermarking algorithms)
 - Pan et al., [*MarkDiffusion: An Open-Source Toolkit for Generative Watermarking of Latent Diffusion Models*](https://arxiv.org/abs/2509.10569) (JMLR) — the embedding toolkit this repo's optional image-watermark harness wraps — [code](https://github.com/THU-BPM/MarkDiffusion), [docs](https://markdiffusion.readthedocs.io)
 - Zhang et al., [*Watermarks in the Sand: Impossibility of Strong Watermarking for Generative Models*](https://arxiv.org/abs/2311.04378v5) (ICML 2024)
+- Sander et al., [*Watermarking Makes Language Models Radioactive*](https://arxiv.org/abs/2402.14904) — watermarks survive fine-tuning and mark downstream models trained on watermarked data
 - [google-deepmind/synthid-text](https://github.com/google-deepmind/synthid-text) (research reference; not used for detection here)
 - [aloshdenny/reverse-SynthID](https://github.com/aloshdenny/reverse-SynthID) (research reference)
 - Liu et al., [*Image Watermarks are Removable Using Controllable Regeneration from Clean Noise*](https://arxiv.org/abs/2410.05470) (ICLR 2025) — the pixel-regeneration method the optional CtrlRegen backend implements — [code](https://github.com/yepengliu/CtrlRegen)
