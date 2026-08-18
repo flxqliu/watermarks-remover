@@ -211,6 +211,22 @@ def test_binary_named_as_text_rejected(conn):
     assert status == 400
 
 
+def test_clean_unknown_format_rejected(conn):
+    data = b"no magic, no extension"
+    status, body = _post(conn, "/clean", {"file": _b64(data), "name": "input"})
+    assert status == 400
+    assert "unrecognized file format" in body["error"]
+
+
+def test_inspect_unknown_format_reports_kind(conn):
+    data = b"no magic, no extension"
+    status, body = _post(conn, "/inspect", {"file": _b64(data), "name": "input"})
+    assert status == 200
+    assert body["kind"] == "unknown"
+    assert body["suspicious"] is False
+    assert "note" in body["report"]
+
+
 def test_missing_file_field_rejected(conn):
     status, _body = _post(conn, "/inspect", {"name": "x.txt"})
     assert status == 400

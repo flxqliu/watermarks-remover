@@ -14,7 +14,13 @@ from typing import Literal
 from container_meta import detect_container_format
 from image_meta import detect_format as detect_image_format
 
-Kind = Literal["text", "image", "container"]
+Kind = Literal["text", "image", "container", "unknown"]
+
+#: Bytes read for header-only sniffing. Every supported image/container
+#: magic lives in the prefix; zip-based containers (docx/odt/...) need the
+#: full central directory, which sits at the end of the archive, so only a
+#: PK header triggers a whole-file read.
+CLASSIFY_HEADER_BYTES = 4096
 
 IMAGE_EXTS = {
     ".png",
@@ -63,8 +69,9 @@ def classify_bytes(data: bytes, suffix: str | None = None) -> Kind:
     """Classify *data* by extension first, then by magic bytes.
 
     The extension wins when it names a known format; otherwise the bytes are
-    sniffed for image/container signatures. Unrecognized bytes fall back to
-    "text" — callers that must not mangle unknown binaries guard themselves.
+    sniffed for image/container signatures. Unrecognized bytes classify as
+    "unknown" — callers that must not mangle unknown binaries refuse unless
+    the user explicitly forces a kind (--as / --force-text).
 
     *data* must cover the whole file: zip-based containers (docx/odt) are
     detected from their central directory, which sits at the end of the bytes.
@@ -82,10 +89,32 @@ def classify_bytes(data: bytes, suffix: str | None = None) -> Kind:
         sniff_path = Path("input") if not ext else Path(f"input{ext}")
         if detect_container_format(sniff_path, data) != "unknown":
             return "container"
-    return "text"
+    return "unknown"
 
 
 def classify(path: Path) -> Kind:
-    """Classify a file on disk by extension, then by its bytes."""
-    data = path.read_bytes()
-    return classify_bytes(data, path.suffix)
+    """Classify a file on disk by extension, then by its bytes.
+
+    Known extensions are routed without reading the file. For unknown
+    extensions a 4096-byte header is sniffed once; only when the header is a
+    zip local header (PK) is the whole file read, because the container
+    signature (docx/xlsx/pptx/odt/epub) lives in the central directory at
+    the end of the archive.
+    """
+    ext = path.suffix.lower()
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in CONTAINER_EXTS:
+        return "container"
+    if ext in TEXT_EXTS:
+        return "text"
+    with path.open("rb") as fh:
+        head = fh.read(CLASSIFY_HEADER_BYTES)
+    if detect_image_format(head) in ("png", "jpeg", "webp", "avif", "heic", "bmp", "gif", "tiff"):
+        return "image"
+    if head:
+        data = path.read_bytes() if head[:4] == b"PK\x03\x04" else head
+        sniff_path = Path("input") if not ext else Path(f"input{ext}")
+        if detect_container_format(sniff_path, data) != "unknown":
+            return "container"
+    return "unknown"

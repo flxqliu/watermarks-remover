@@ -430,6 +430,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_inspect(self, data: bytes, name: str) -> None:
         kind = classify_bytes(data, Path(name).suffix)
+        if kind == "unknown":
+            self._respond(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "kind": "unknown",
+                    "report": {
+                        "note": "unrecognized format; use a filename with a known extension",
+                    },
+                    "suspicious": False,
+                },
+            )
+            return
         with tempfile.TemporaryDirectory(prefix="wm-inspect-") as tmp:
             path = _tmp_path(Path(tmp), name or "input")
             path.write_bytes(data)
@@ -457,6 +470,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_clean(self, data: bytes, name: str, body: dict[str, Any]) -> None:
         kind = classify_bytes(data, Path(name).suffix)
+        if kind == "unknown":
+            raise ValueError(
+                "unrecognized file format; use a filename with a known extension "
+                "(e.g. notes.txt) or a supported image/container name"
+            )
         options = body.get("options")
         if options is None:
             options = {}
