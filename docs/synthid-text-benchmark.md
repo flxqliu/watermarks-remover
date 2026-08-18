@@ -48,10 +48,10 @@ Prerequisites (all external, matching the repo's optional-harness model):
 API keys are read from the environment only (WATERMARKS_REWRITE_API_KEY),
 never argv. Non-loopback rewrite endpoints require --rewrite-allow-remote.
 
-Optional vendor tier: set WATERMARKS_GEMINI_API_KEY and the benchmark also
-scores every sample with Google's official SynthID-text detector (Gemini API)
-and reports a gemini_cleared rate. This is the only signal that says anything
-about Google's production detector.
+No vendor tier: Google retired SynthID text watermarking on its API in
+Aug 2026 (DETECT_TEXT_WATERMARK is rejected on current models), so detection
+here is MarkLLM same-config only. A vendor tier can be re-added if Google
+exposes detection again (e.g. via Vertex AI).
 
 Cost modeling: --cost-per-mtok-in 0.30 --cost-per-mtok-out 1.20 (example
 prices) attaches an estimated USD figure per row; token counts are
@@ -82,8 +82,8 @@ docker compose run --rm wr-markllm \
   --restamp-control
 ```
 
-Env (rewrite backend, Gemini key) is wired from your .env via compose
-interpolation; results land in the `bench-out` volume (/data); the bundled
+Env (rewrite backend) is wired from your .env via compose interpolation;
+results land in the `bench-out` volume (/data); the bundled
 corpus is mounted read-only at /bench-corpus. The image runs the
 persistent MarkLLM serve worker by default, so the ~2-4h one-shot runs
 are not a constraint inside the container either.
@@ -95,10 +95,10 @@ are not a constraint inside the container either.
   cost were observed. Same-config-only detection is deterministic and
   reproducible (fixed seeds, pinned MarkLLM commit, recorded commands).
 - Cannot claim: that Google's production SynthID-Text detector will fail.
-  MarkLLM's SynthID is a research reimplementation with a different keying;
-  only the optional Gemini tier touches the real vendor detector. Rewriting
-  with a watermarked model can also re-stamp the text - run --restamp-control
-  to check.
+  MarkLLM's SynthID is a research reimplementation with a different keying,
+  and Google retired text watermark detection on its API (Aug 2026), so no
+  vendor tier exists to verify against. Rewriting with a watermarked model
+  can also re-stamp the text - run --restamp-control to check.
 
 ## Sharing a run
 

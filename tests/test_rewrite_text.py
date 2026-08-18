@@ -164,8 +164,6 @@ def _two_candidates(monkeypatch):
 
 
 def test_duplicate_candidates_mark_only_one_selected(monkeypatch):
-    monkeypatch.delenv("WATERMARKS_GEMINI_API_KEY", raising=False)
-
     texts = iter(
         [
             "alpha beta gamma delta",
@@ -236,33 +234,6 @@ def test_candidate_scores_restructured_with_detections(monkeypatch):
     assert mk["before"]["is_watermarked"] is True
     assert mk["after"]["is_watermarked"] is False
     assert mk["cleared"] is True
-
-
-def test_candidate_detections_gemini_trigger_excludes_markllm(monkeypatch):
-    monkeypatch.setenv("WATERMARKS_GEMINI_API_KEY", "k")
-    calls: list = []
-
-    def fake_run_all(text, *, markllm=None, include_markllm=True):
-        calls.append((text, markllm, include_markllm))
-        return [
-            {
-                "detector": "gemini-synthid-text",
-                "available": True,
-                "is_watermarked": False,
-                "score": 0.2,
-            }
-        ]
-
-    monkeypatch.setattr(rewrite_text, "run_all_text_detectors", fake_run_all)
-    _two_candidates(monkeypatch)
-    out, info = rewrite("the cat sat on the mat", **_rewrite_candidates_kwargs())
-    assert out == "alpha beta gamma delta"
-    assert "markllm" not in info
-    cs = info["candidate_scores"]
-    assert cs[0]["detections"][0]["detector"] == "gemini-synthid-text"
-    # no --markllm-scheme -> the MarkLLM harness is excluded from the loop
-    assert calls[0][1] is None
-    assert calls[0][2] is False
 
 
 def test_candidate_detections_off_without_trigger(monkeypatch):

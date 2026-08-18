@@ -202,7 +202,6 @@ Text detectors (see `/capabilities` → `text_detectors`):
 
 | Detector | Activated by | Notes |
 | --- | --- | --- |
-| `gemini-synthid-text` | `WATERMARKS_GEMINI_API_KEY` | Google's official SynthID-text detector via the Gemini API (`taskType: DETECT_TEXT_WATERMARK`). Sends text to Google only when the operator sets the key. |
 | `markllm` | `MARKLLM_DIR` (host checkout) | Research harness (KGW / SynthID schemes), same-config-only — not a vendor oracle. |
 | `claude-text` | — (placeholder) | Anthropic has announced a watermark detection API; this seam activates when it ships. |
 
@@ -279,8 +278,7 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | Var | Reaches | Purpose |
 | --- | --- | --- |
 | `WATERMARKS_SERVER_API_KEY` | `wr-core` (via compose `environment`) | Require `Authorization: Bearer <key>` on the HTTP API |
-| `WATERMARKS_GEMINI_API_KEY` | `wr-core` | Enable Google's SynthID-text detector (`/detect`, `detect_before/after`) — env only, never on argv |
-| `WATERMARKS_GEMINI_MODEL` | `wr-core` | Gemini model for detection (default `gemini-3.6-flash`; note: Google retired text watermark detection on the API — see `vendor-notes.md`) |
+| `WATERMARKS_GEMINI_*` | — | Removed Aug 2026: Google retired SynthID text watermarking on the API (see `vendor-notes.md`) |
 | `WATERMARKS_SYNTHID_SCORER_URL` | `wr-core` | Point core at the `wr-synthid-score` sidecar for SynthID image scoring (e.g. `http://wr-synthid-score:8766` under the heavy profile) |
 | `WATERMARKS_SYNTHID_SCORER_API_KEY` | `wr-core` + `wr-synthid-score` | Shared bearer key for the scorer sidecar (empty = no auth) |
 | `WATERMARKS_MARKLLM_SCHEME` | `text_detectors.py` (host) | MarkLLM scheme for `/detect`: `kgw` (default) / `synthid` |
@@ -514,7 +512,7 @@ MARKLLM_DIR=~/MarkLLM \
 ```
 
 **Per-candidate detection:** when `--candidates N` (`N > 1`) is combined with
-`--markllm-scheme` (or with `WATERMARKS_GEMINI_API_KEY` set), every generated
+`--markllm-scheme`, every generated
 candidate is run through the configured text detectors and `--json-stats`
 reports per-candidate measurements. Candidate selection stays purely lexical;
 the detections exist so you can see whether divergence actually correlates with
@@ -611,8 +609,7 @@ WATERMARKS_REWRITE_API_KEY=... python3 service/scripts/bench_synthid_text.py \
 
 Use a **non-origin model** for rewriting (do not rewrite with the same
 watermarked model that generated the text) or the rewrite can re-stamp the
-output; `--restamp-control` measures this. Setting `WATERMARKS_GEMINI_API_KEY`
-adds Google's official SynthID-text detector as an additional vendor check.
+output; `--restamp-control` measures this.
 
 ## Optional MarkDiffusion image-watermark harness
 
@@ -696,7 +693,7 @@ on the host instead. Model downloads still hit the HF hub on first run.
 | Channel | Claude | Gemini/SynthID | OpenAI | Open-LLM |
 | --- | --- | --- | --- | --- |
 | Unicode / edit-based text | Layer A | Layer A | Layer A | Layer A |
-| **Statistical sampling text** | Layer B best-effort + optional vendor detector (`gemini-synthid-text`; Claude seam when Anthropic's detection API ships) | Layer B best-effort + optional vendor detector (`gemini-synthid-text`) | Layer B if present | Layer B best-effort + optional MarkLLM harness |
+| **Statistical sampling text** | Layer B best-effort (Claude seam when Anthropic's detection API ships) | Layer B best-effort (+ MarkLLM same-config harness; Google retired the vendor detector Aug 2026) | Layer B if present | Layer B best-effort + optional MarkLLM harness |
 | C2PA / file metadata | Yes (listed formats) | Yes when present | Yes when present | Yes when present |
 | Pixel image marks | Out of scope | Optional SynthID score + CtrlRegen removal (external); optional MarkDiffusion same-scheme detect + DiffusionPurification removal (external) | Out of scope | Optional CtrlRegen / MarkDiffusion removal (external) |
 | Training backdoors | Out of scope | Out of scope | Out of scope | Out of scope |

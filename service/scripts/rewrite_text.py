@@ -182,8 +182,7 @@ def _per_candidate_detections(
     Fail-soft: a detector that is unconfigured, times out, or errors yields
     an ``available: False`` entry and never fails the rewrite. The MarkLLM
     harness is only included when ``markllm_detector`` is given (i.e. the
-    caller passed --markllm-scheme); other detectors (e.g.
-    gemini-synthid-text) are key-gated by their own environment.
+    caller passed --markllm-scheme).
     """
     detections: list[list[dict]] = []
     for cand in candidates:
@@ -379,9 +378,7 @@ def rewrite(
         info["candidates"] = n
         out, scores = _select_candidate(text, outs)
         selected_idx = max(range(len(outs)), key=lambda i: scores[i])
-        trigger = markllm_scheme is not None or bool(
-            os.environ.get("WATERMARKS_GEMINI_API_KEY", "").strip()
-        )
+        trigger = markllm_scheme is not None
         detections = _per_candidate_detections(outs, markllm_detector) if trigger else []
         info["candidate_scores"] = []
         for i, cand in enumerate(outs):

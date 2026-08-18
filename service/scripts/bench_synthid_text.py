@@ -16,11 +16,9 @@ benchmark:
        - cost (estimated tokens, wall time, optional USD at given prices)
   4. Emit results.json / results.csv / report.md for sharing.
 
-Detection tiers:
-  - markllm  (always): same-config-only research detection; reproducible
-    without vendor APIs. NOT Google's production SynthID-Text keying.
-  - gemini   (when WATERMARKS_GEMINI_API_KEY is set): Google's official
-    SynthID-text detector via the Gemini API. The only vendor signal.
+Detection: same-config-only MarkLLM research detection (reproducible,
+no vendor APIs). Google retired SynthID text watermarking on its API in
+Aug 2026, so no vendor tier exists.
 
 See docs/synthid-text-benchmark.md for how to run and share.
 
@@ -51,7 +49,6 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from common import eprint  # noqa: E402
 from rewrite_text import _lexical_divergence  # noqa: E402
-from text_detectors import GeminiSynthIDTextDetector  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
 
 _RESOLVED_SCRIPT = Path(__file__).resolve()
@@ -330,10 +327,6 @@ def run_rewrite(
     env = dict(os.environ)
     if api_key:
         env["WATERMARKS_REWRITE_API_KEY"] = api_key
-    # The benchmark runs its own Gemini before/after per row; without this,
-    # the rewrite subprocess would also run per-candidate Gemini+MarkLLM
-    # detections (candidates > 1), each a cold-start model load.
-    env.pop("WATERMARKS_GEMINI_API_KEY", None)
     cmd = [
         python,
         str(script),
@@ -591,11 +584,6 @@ class Benchmark:
         self.python = str(_venv_python(upstream) or sys.executable)
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
-        self.gemini = None
-        if not args.no_gemini:
-            det = GeminiSynthIDTextDetector()
-            if det.available():
-                self.gemini = det
         self.chars_per_token = args.chars_per_token
         self.worker = None
         if not args.no_worker:
@@ -673,10 +661,6 @@ class Benchmark:
             markllm_timeout=a.markllm_timeout,
         )
 
-    def gemini_detect(self, text: str) -> dict[str, Any]:
-        assert self.gemini is not None
-        return self.gemini.detect(text)
-
     # -- phases ------------------------------------------------------------
 
     def generate_samples(self, workdir: Path) -> list[dict[str, Any]]:
@@ -729,8 +713,6 @@ class Benchmark:
                     )
                 if _detect_positive(plain_detect):
                     sample["notes"].append("unwatermarked control detected positive (weak control)")
-                if self.gemini is not None:
-                    sample["gemini_before"] = self.gemini_detect(wm_text)
                 samples.append(sample)
                 done += 1
                 status = "excluded" if sample.get("excluded") else "ok"
@@ -861,7 +843,6 @@ class Benchmark:
                             "quality": _quality(
                                 sample["unwatermarked"], out_text, self.chars_per_token
                             ),
-                            "gemini_after": self._gemini(out_text, sample),
                             "notes": (
                                 ["re-stamped by rewrite backend"]
                                 if _detect_positive(after)
@@ -869,17 +850,15 @@ class Benchmark:
                             ),
                         }
                     )
-            cleared_count = sum(1 for r in rows if r["doc"] == base["doc"] and r["seed"] == base["seed"] and r.get("cleared"))
-            eprint(f"[removal] {base['doc']} seed {base['seed']}: {len(rows)} rows, {cleared_count} cleared")
+            cleared_count = sum(
+                1
+                for r in rows
+                if r["doc"] == base["doc"] and r["seed"] == base["seed"] and r.get("cleared")
+            )
+            eprint(
+                f"[removal] {base['doc']} seed {base['seed']}: {len(rows)} rows, {cleared_count} cleared"
+            )
         return rows
-
-    def _gemini(self, text: str, sample: dict[str, Any]) -> dict[str, Any] | None:
-        if self.gemini is None:
-            return None
-        try:
-            return self.gemini_detect(text)
-        except Exception as e:  # fail-soft, like the detector contract
-            return {"available": False, "error": str(e)}
 
     def _row(
         self,
@@ -920,11 +899,6 @@ class Benchmark:
             row["notes"].append("no removal applied (baseline)")
         elif kind == "layer-a":
             row["notes"].append("Layer A only; statistical marks are expected to survive")
-        row["gemini_after"] = self._gemini(candidate, sample)
-        if row["gemini_after"] and row["gemini_after"].get("available"):
-            gb = (sample.get("gemini_before") or {}).get("is_watermarked")
-            ga = row["gemini_after"].get("is_watermarked")
-            row["gemini_cleared"] = bool(gb and not ga) if gb is not None else None
         return row
 
 
@@ -999,12 +973,6 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
             ),
             "notes": sorted({n for r in group for n in r.get("notes", [])}),
         }
-        gemini_cleared = [r["gemini_cleared"] for r in group if r.get("gemini_cleared") is not None]
-        if gemini_cleared:
-            entries["gemini_cleared"] = sum(1 for c in gemini_cleared if c)
-            entries["gemini_clear_rate"] = round(
-                sum(1 for c in gemini_cleared if c) / len(gemini_cleared), 4
-            )
         out[variant] = entries
     return out
 
@@ -1047,22 +1015,9 @@ def render_markdown(
         "**Caveats:** MarkLLM's SynthID is a research reimplementation under a "
         "config the benchmark controls — detection is only valid against the same "
         "config+keys, and it is **not** Google's production SynthID-Text keying. "
-        + (
-            "The Gemini tier (official SynthID-text detector via the Gemini API) is "
-            "enabled in this run."
-            if config.get("gemini")
-            else "No official detector was configured (set WATERMARKS_GEMINI_API_KEY for the vendor tier)."
-        )
-        + " Rewriting with a watermarked model can re-stamp the text."
-    )
-    L.append("")
-    L.append(
-        "**Gemini tier note (Aug 2026):** Google retired SynthID text watermarking "
-        "on the Generative Language API — text output is no longer watermarked and "
-        "DETECT_TEXT_WATERMARK is rejected on current (3.x) models. The Gemini tier "
-        "here fails soft with the live API error unless a working vendor endpoint "
-        "(e.g. Vertex AI) is configured, so absent gemini_* columns mean "
-        "unavailable, not a negative result."
+        "(Google retired text watermarking on its API in Aug 2026, so no vendor "
+        "tier is available.) Rewriting with a watermarked model can re-stamp the "
+        "text."
     )
     L.append("")
     L.append("## Results (per variant)")
@@ -1108,18 +1063,6 @@ def render_markdown(
                 )
     else:
         L.append("- Re-stamp control: not run (pass --restamp-control)")
-    if any(r.get("gemini_cleared") is not None for r in rows):
-        L.append("")
-        L.append("## Gemini tier (official SynthID-text detector)")
-        L.append("")
-        L.append("| Variant | gemini cleared | rate |")
-        L.append("| --- | ---: | ---: |")
-        for variant, a in agg.items():
-            if "gemini_clear_rate" in a:
-                L.append(
-                    f"| {variant} | {a['gemini_cleared']}/{a.get('before_positive', a['n'])} | "
-                    f"{_fmt(a['gemini_clear_rate'])} |"
-                )
     L.append("")
     L.append("## Reproduction")
     L.append("")
@@ -1192,11 +1135,6 @@ def main() -> int:
         "--cost-per-mtok-out", type=float, default=0.0, help="USD per million output tokens"
     )
     p.add_argument(
-        "--no-gemini",
-        action="store_true",
-        help="Skip the Gemini official-detector tier even if keyed",
-    )
-    p.add_argument(
         "--no-worker",
         action="store_true",
         help="Do not use the persistent MarkLLM serve worker (one-shot subprocesses)",
@@ -1247,7 +1185,6 @@ def main() -> int:
         "rewrite_base_url": args.rewrite_base_url,
         "rewrite_temperature": args.rewrite_temperature,
         "restamp_control": args.restamp_control,
-        "gemini": bench.gemini is not None,
         "chars_per_token": args.chars_per_token,
         "cost_per_mtok_in": args.cost_per_mtok_in,
         "cost_per_mtok_out": args.cost_per_mtok_out,
@@ -1277,9 +1214,6 @@ def main() -> int:
     eprint(f"corpus: {len(bench.corpus)} docs, {args.seeds} seed(s) each")
     eprint(f"variants: {', '.join(config['variants'])}")
     eprint(f"markllm via: {bench.python}")
-    if bench.gemini is not None:
-        eprint("gemini official-detector tier: enabled")
-
     try:
         samples = bench.generate_samples(workdir)
         rows = bench.run_variants(samples, workdir)

@@ -1,7 +1,7 @@
 """Tests for the SynthID-text removal benchmark (bench_synthid_text.py).
 
 Mock-based: the heavy steps (MarkLLM watermark/detect, Layer B rewrite,
-Gemini API) are faked, so the suite needs no torch, no network, and no
+are faked, so the suite needs no torch, no network, and no
 rewrite backend. It exercises orchestration, sanity gating, aggregation,
 controls, and the JSON/CSV/Markdown outputs.
 """
@@ -55,7 +55,6 @@ def _args(**overrides):
         chars_per_token=4.0,
         cost_per_mtok_in=0.0,
         cost_per_mtok_out=0.0,
-        no_gemini=True,
         no_worker=True,
     )
     values.update(overrides)
@@ -135,7 +134,7 @@ def test_load_corpus(tmp_path):
 
 
 def test_parse_stats_json_skips_warning_lines():
-    stderr = "note: running per-candidate detection (gemini-synthid-text)\n" + json.dumps(
+    stderr = "note: running per-candidate detection\n" + json.dumps(
         {"mode": "rewritten", "markllm": {"cleared": True}}
     )
     stats = _parse_stats_json(stderr)
@@ -318,7 +317,6 @@ class _FakeBench:
         self.python = "python3"
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
-        self.gemini = None
         self.chars_per_token = args.chars_per_token
 
     def close_worker(self):
@@ -361,7 +359,6 @@ class _FakeBench:
                 "seconds": 1.5,
                 "usd": 0.0,
                 "notes": [],
-                "gemini_after": None,
             },
             {
                 "doc": "d1",
