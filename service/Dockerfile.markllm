@@ -40,6 +40,7 @@ RUN git clone --depth 1 --filter=blob:none --sparse \
         '/config/' \
         '/utils/' \
         '/exceptions/' \
+        '/visualize/' \
         '/evaluation/dataset.py' \
         '/LICENSE' \
         '/README.md' \
@@ -48,6 +49,11 @@ RUN git clone --depth 1 --filter=blob:none --sparse \
 COPY scripts/requirements-markllm.txt /app/requirements-markllm.txt
 COPY scripts/detect_text_watermark.py /app/detect_text_watermark.py
 COPY scripts/common.py /app/common.py
+# Benchmark + Layer B rewrite machinery (all stdlib; no extra deps).
+COPY scripts/bench_synthid_text.py /app/bench_synthid_text.py
+COPY scripts/rewrite_text.py /app/rewrite_text.py
+COPY scripts/text_detectors.py /app/text_detectors.py
+COPY scripts/text_unicode.py /app/text_unicode.py
 
 # torch is installed first from the CPU index (like Dockerfile.markdiffusion);
 # the remaining pinned deps then resolve against it. No GPU wheel index inside

@@ -58,8 +58,25 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /home/markllm/.cache/huggingface
+      # Layer B rewrite backend (openai-compatible / ollama) + optional
+      # Gemini official SynthID-text detector tier for the benchmark.
+      WATERMARKS_REWRITE_BACKEND: ${WATERMARKS_REWRITE_BACKEND:-}
+      WATERMARKS_REWRITE_MODEL: ${WATERMARKS_REWRITE_MODEL:-}
+      WATERMARKS_REWRITE_BASE_URL: ${WATERMARKS_REWRITE_BASE_URL:-}
+      WATERMARKS_REWRITE_API_KEY: ${WATERMARKS_REWRITE_API_KEY:-}
+      WATERMARKS_REWRITE_ALLOW_REMOTE: ${WATERMARKS_REWRITE_ALLOW_REMOTE:-}
+      WATERMARKS_REWRITE_REASONING_EFFORT: ${WATERMARKS_REWRITE_REASONING_EFFORT:-}
+      WATERMARKS_GEMINI_API_KEY: ${WATERMARKS_GEMINI_API_KEY:-}
+      WATERMARKS_GEMINI_MODEL: ${WATERMARKS_GEMINI_MODEL:-}
     volumes:
       - markllm-cache:/home/markllm/.cache/huggingface
+      # Writable output for the benchmark + the bundled seed corpus (the
+      # build context is service/, so the corpus is mounted at runtime):
+      #   docker compose run --rm wr-markllm \
+      #     /app/bench_synthid_text.py --markllm-dir /opt/markllm \
+      #     --corpus /bench-corpus --out-dir /data ...
+      - bench-out:/data
+      - ./benchmarks/corpus:/bench-corpus:ro
 
   wr-markdiffusion:
     profiles: [harness]
@@ -141,6 +158,7 @@ services:
 
 volumes:
   markllm-cache:
+  bench-out:
   markdiffusion-cache:
   ctrlregen-cache:
   synthid-cache:

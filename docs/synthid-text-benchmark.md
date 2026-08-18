@@ -65,6 +65,29 @@ chars / --chars-per-token estimates (default 4.0).
 - results.csv - one row per (doc, seed, variant) for plotting.
 - work/ - generated watermarked/unwatermarked samples (kept for inspection).
 
+## Running from Docker (compose)
+
+The `wr-markllm` service in compose.yaml can run the benchmark end-to-end
+(image: pinned MarkLLM checkout at /opt/markllm + all scripts). The image
+installs CPU torch by design, so use it for portability/CI, not for GPU
+throughput on this machine — for GPU runs use the host `setup_markllm.sh`
+venv instead (see README).
+
+```bash
+docker compose --profile harness build wr-markllm
+docker compose run --rm wr-markllm \
+  /app/bench_synthid_text.py --markllm-dir /opt/markllm \
+  --corpus /bench-corpus --out-dir /data --tag docker-run \
+  --docs 10 --seeds 3 --variants "paraphrase:1,paraphrase:3,backtranslate:1" \
+  --restamp-control
+```
+
+Env (rewrite backend, Gemini key) is wired from your .env via compose
+interpolation; results land in the `bench-out` volume (/data); the bundled
+corpus is mounted read-only at /bench-corpus. The image runs the
+persistent MarkLLM serve worker by default, so the ~2-4h one-shot runs
+are not a constraint inside the container either.
+
 ## What it can and cannot claim
 
 - Can claim: under the MarkLLM SynthID scheme config the benchmark
