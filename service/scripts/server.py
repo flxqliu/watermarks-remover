@@ -627,6 +627,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             ext = Path(name).suffix
             if not ext:
                 from image_meta import detect_format
+
                 fmt_name = detect_format(data)
                 ext = f".{fmt_name}" if fmt_name != "unknown" else ".png"
             dest = _tmp_path(tmpdir, f"out{ext}")
@@ -661,6 +662,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             container_fmt = None
             if not ext:
                 from container_meta import detect_container_format
+
                 container_fmt = detect_container_format(Path("input"), data)
                 ext_map = {
                     "svg": ".svg",

@@ -387,7 +387,9 @@ def test_clean_jpeg_preserves_format_extension(conn):
 
 
 def test_clean_extensionless_svg_container_post_inspection(conn):
-    svg_bytes = b'<svg xmlns="http://www.w3.org/2000/svg"><metadata>c2pa test</metadata><rect/></svg>'
+    svg_bytes = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><metadata>c2pa test</metadata><rect/></svg>'
+    )
     status, body = _post(
         conn,
         "/clean",
@@ -398,4 +400,3 @@ def test_clean_extensionless_svg_container_post_inspection(conn):
     assert body["kind"] == "container"
     assert body["report"]["format"] == "svg"
     assert body["report"]["still_has_c2pa"] is False
-
