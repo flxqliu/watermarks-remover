@@ -170,6 +170,10 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) â
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
+| POST | `/inspect/batch` | `{"files": [{"file": "<base64>", "name": "notes.md"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "suspicious", "report"}, ...]}` |
+| POST | `/clean/batch` | `{"files": [{"file": "<base64>", "name": "notes.md", "options": {...}}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "cleaned": "<base64>", "report"}, ...]}` |
+
+Batch endpoints loop the same per-file pipeline as `/inspect` and `/clean`, capped at `WATERMARKS_MAX_BATCH_FILES` files per request (default 50). A malformed entry (bad base64, unknown option, unrecognized format) surfaces as that entry's `"ok": false` with an `"error"` string â€” it never aborts the rest of the batch.
 
 ```bash
 WM="http://127.0.0.1:8765"
