@@ -932,8 +932,12 @@ def _prune_dangling_relationships(
     dropped = [0]
 
     def _target_attr(tag: str) -> str:
-        m = re.search(r'\bTarget\s*=\s*"([^"]*)"', tag, re.I)
-        return m.group(1) if m else ""
+        # XML allows single- or double-quoted attribute values; matching only
+        # double quotes made every single-quoted Relationship look like an
+        # empty target, which resolved to the package base and got pruned —
+        # corrupting packages from tools that emit single quotes (#130).
+        m = re.search(r"\bTarget\s*=\s*([\"'])(.*?)\1", tag, re.I)
+        return m.group(2) if m else ""
 
     def _drop(m: re.Match[str]) -> str:
         tag = m.group(0)
@@ -969,8 +973,9 @@ def _prune_odt_manifest_entries(raw: bytes, dropped: set[str]) -> tuple[bytes, i
     removed = [0]
 
     def _full_path(tag: str) -> str:
-        m = re.search(r'\bfull-path\s*=\s*"([^"]*)"', tag, re.I)
-        return m.group(1) if m else ""
+        # Same single/double-quote tolerance as _target_attr (#130).
+        m = re.search(r"\bfull-path\s*=\s*([\"'])(.*?)\1", tag, re.I)
+        return m.group(2) if m else ""
 
     def _drop(m: re.Match[str]) -> str:
         tag = m.group(0)
