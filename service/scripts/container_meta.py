@@ -816,6 +816,43 @@ def inspect_pptx(data: bytes) -> tuple[bool, bool, list[str], dict]:
     return _inspect_ooxml_zip(data, "pptx")
 
 
+_XML_CHAR_REF_RE = re.compile(r"&#(?:x([0-9A-Fa-f]+)|([0-9]+));|&(amp|lt|gt|quot|apos);")
+_XML_NAMED_ENTITIES = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'"}
+
+
+def _decode_xml_entities(s: str) -> str:
+    """Decode what a conforming XML parser would resolve: numeric character
+    references and the five predefined entities. A watermark carrier encoded as
+    ``&#x200B;`` otherwise reaches Layer A as nine ASCII characters and survives
+    cleaning, because the parser in Word/Writer decodes the entity afterwards
+    (#129). Anything a parser would leave literal stays literal here.
+    """
+
+    def _sub(m: re.Match[str]) -> str:
+        hex_digits, decimal, named = m.group(1), m.group(2), m.group(3)
+        if named:
+            return _XML_NAMED_ENTITIES[named]
+        codepoint = int(hex_digits, 16) if hex_digits else int(decimal)
+        if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return m.group(0)  # not a character; leave for the real parser to reject
+        try:
+            return chr(codepoint)
+        except ValueError:
+            return m.group(0)
+
+    return _XML_CHAR_REF_RE.sub(_sub, s)
+
+
+def _reencode_xml_text(s: str) -> str:
+    """Escape text content the way a serializer would: ``&``, ``<`` and ``>``.
+
+    ``>`` is legal literally in text content but re-escaping it is a semantic
+    no-op, and `<`/``&`` must be escaped anyway — so a decode/clean/re-encode
+    round trip is stable for any well-formed input.
+    """
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _scrub_docx_text(xml_text: str) -> tuple[str, int, int]:
     """Run Layer A over the ``<w:t>`` text runs of a DOCX part.
 
@@ -832,14 +869,14 @@ def _scrub_docx_text(xml_text: str) -> tuple[str, int, int]:
     def _repl(m: re.Match[str]) -> str:
         nonlocal removed, replaced
         open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        new_inner, stats = clean_text(inner)
+        new_inner, stats = clean_text(_decode_xml_entities(inner))
         if not (stats["removed_count"] or stats["replaced_count"]):
             return m.group(0)
         removed += stats["removed_count"]
         replaced += stats["replaced_count"]
         if (new_inner[:1].isspace() or new_inner[-1:].isspace()) and "xml:space" not in open_tag:
             open_tag = open_tag[:-1] + ' xml:space="preserve">'
-        return open_tag + new_inner + close_tag
+        return open_tag + _reencode_xml_text(new_inner) + close_tag
 
     new = re.sub(r"(<w:t\b[^>]*>)(.*?)(</w:t>)", _repl, xml_text, flags=re.S)
     return new, removed, replaced
@@ -855,14 +892,14 @@ def _scrub_xlsx_text(xml_text: str) -> tuple[str, int, int]:
     def _repl(m: re.Match[str]) -> str:
         nonlocal removed, replaced
         open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        new_inner, stats = clean_text(inner)
+        new_inner, stats = clean_text(_decode_xml_entities(inner))
         if not (stats["removed_count"] or stats["replaced_count"]):
             return m.group(0)
         removed += stats["removed_count"]
         replaced += stats["replaced_count"]
         if (new_inner[:1].isspace() or new_inner[-1:].isspace()) and "xml:space" not in open_tag:
             open_tag = open_tag[:-1] + ' xml:space="preserve">'
-        return open_tag + new_inner + close_tag
+        return open_tag + _reencode_xml_text(new_inner) + close_tag
 
     new = re.sub(r"(<t\b[^>]*>)(.*?)(</t>)", _repl, xml_text, flags=re.S)
     return new, removed, replaced
@@ -878,12 +915,12 @@ def _scrub_pptx_text(xml_text: str) -> tuple[str, int, int]:
     def _repl(m: re.Match[str]) -> str:
         nonlocal removed, replaced
         open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        new_inner, stats = clean_text(inner)
+        new_inner, stats = clean_text(_decode_xml_entities(inner))
         if not (stats["removed_count"] or stats["replaced_count"]):
             return m.group(0)
         removed += stats["removed_count"]
         replaced += stats["replaced_count"]
-        return open_tag + new_inner + close_tag
+        return open_tag + _reencode_xml_text(new_inner) + close_tag
 
     new = re.sub(r"(<a:t\b[^>]*>)(.*?)(</a:t>)", _repl, xml_text, flags=re.S)
     return new, removed, replaced
@@ -894,7 +931,8 @@ def _scrub_odt_text(xml_text: str) -> tuple[str, int, int]:
 
     ``text:span``/``text:tab``/``text:s`` children live inside the paragraph,
     so cleaning the paragraph content covers the visible text. The markup
-    itself is untouched.
+    itself is untouched: entities are decoded and re-encoded per text segment
+    only — a whole-paragraph round trip would escape the nested markup.
     """
     from text_unicode import clean_text  # local import to avoid cycles
 
@@ -904,12 +942,24 @@ def _scrub_odt_text(xml_text: str) -> tuple[str, int, int]:
     def _repl(m: re.Match[str]) -> str:
         nonlocal removed, replaced
         open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        new_inner, stats = clean_text(inner)
-        if not (stats["removed_count"] or stats["replaced_count"]):
+        parts = re.split(r"(<[^>]+>)", inner)
+        new_parts: list[str] = []
+        changed = False
+        for segment in parts:
+            if not segment or segment.startswith("<"):
+                new_parts.append(segment)
+                continue
+            new_segment, stats = clean_text(_decode_xml_entities(segment))
+            if stats["removed_count"] or stats["replaced_count"]:
+                removed += stats["removed_count"]
+                replaced += stats["replaced_count"]
+                changed = True
+                new_parts.append(_reencode_xml_text(new_segment))
+            else:
+                new_parts.append(segment)
+        if not changed:
             return m.group(0)
-        removed += stats["removed_count"]
-        replaced += stats["replaced_count"]
-        return open_tag + new_inner + close_tag
+        return open_tag + "".join(new_parts) + close_tag
 
     new = re.sub(r"(<text:p\b[^>]*>)(.*?)(</text:p>)", _repl, xml_text, flags=re.S)
     return new, removed, replaced
