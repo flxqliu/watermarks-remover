@@ -7,7 +7,8 @@ benchmark:
   1. Generate a watermarked + unwatermarked corpus with the MarkLLM SynthID
      scheme (same-config generation and detection).
   2. Run removal variants (Layer A only, Layer B rewrites at chosen
-     strength x candidate counts) and control rows (no removal, optional
+     strength x max-attempt counts; the rewrite loop stops early when an
+     attempt passes evaluation) and control rows (no removal, optional
      re-stamp control on unwatermarked text).
   3. Measure removal efficiency and cost:
        - clear rate (before-positive -> after-negative) per variant
@@ -69,10 +70,12 @@ REWRITE_TIMEOUT = float(os.environ.get("WATERMARKS_REWRITE_TIMEOUT", "300"))
 
 
 def parse_variants(spec: str) -> list[tuple[str, int]]:
-    """Parse a variant spec like 'paraphrase:1,backtranslate:3'.
+    """Parse a variant spec like 'paraphrase:3,backtranslate:3'.
 
     Each item is <strength>:<candidates>; strengths come from rewrite_text.py
-    (paraphrase, backtranslate, structural, humanize, code).
+    (paraphrase, backtranslate, structural, humanize, code). candidates is the
+    max rewrite attempts per input — the Layer B loop stops early as soon as
+    an attempt passes evaluation.
     """
     variants: list[tuple[str, int]] = []
     for raw_item in spec.split(","):
@@ -315,8 +318,10 @@ def run_rewrite(
 ) -> tuple[str, dict[str, Any]]:
     """Run the Layer B rewrite on *text* via rewrite_text.py (real product path).
 
-    Returns (rewritten_text, stats). Stats carry markllm.before/after/cleared;
-    errors raise RuntimeError so callers record a note.
+    Returns (rewritten_text, stats). Stats carry evaluator/attempts_made/
+    passed plus markllm.before/after/cleared (always present: the bench passes
+    --markllm-scheme, so MarkLLM drives the iterative rewrite loop); errors
+    raise RuntimeError so callers record a note.
     """
     import tempfile
 
@@ -803,9 +808,20 @@ class Benchmark:
                 row["after_pos"] = _detect_positive(markllm_after)
                 row["score_after"] = _score_of(markllm_after)
                 row["seconds"] = rewrite_seconds
+                row["attempts"] = stats.get("attempts_made")
+                row["evaluator"] = stats.get("evaluator")
+                row["passed"] = stats.get("passed")
                 row["rewrite_stats"] = {
                     k: stats[k]
-                    for k in ("candidate_scores", "output_chars", "layer_a_after")
+                    for k in (
+                        "candidate_scores",
+                        "output_chars",
+                        "layer_a_after",
+                        "evaluator",
+                        "attempts_made",
+                        "passed",
+                        "mode",
+                    )
                     if k in stats
                 }
                 rows.append(row)
@@ -938,6 +954,7 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
         ]
         quals = [r["quality"] for r in group if r.get("quality")]
         seconds = [r["seconds"] for r in group if isinstance(r.get("seconds"), (int, float))]
+        attempts = [r["attempts"] for r in group if isinstance(r.get("attempts"), (int, float))]
         usd = sum(r.get("usd") or 0.0 for r in group)
         tokens_out = [q["tokens_out"] for q in quals]
         mean_tokens_out = _mean(tokens_out) if tokens_out else None
@@ -964,6 +981,7 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
             else None,
             "mean_tokens_in": round(_mean([q["tokens_in"] for q in quals])) if quals else None,
             "mean_tokens_out": round(mean_tokens_out) if mean_tokens_out else None,
+            "mean_attempts": round(_mean([float(a) for a in attempts]), 2) if attempts else None,
             "mean_seconds": round(_mean(seconds), 2) if seconds else None,
             "est_usd": round(usd, 6),
             "clears_per_mtok_out": (
@@ -1023,12 +1041,12 @@ def render_markdown(
     L.append("## Results (per variant)")
     L.append("")
     L.append(
-        "| Variant | n | clear % | Δscore μ | lex div | len ratio | nums keep | tok out | s/doc | clears/MTok |"
+        "| Variant | n | clear % | Δscore μ | lex div | len ratio | nums keep | tok out | att | s/doc | clears/MTok |"
     )
-    L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for variant, a in agg.items():
         L.append(
-            "| {v} | {n} | {cr} | {d} | {ld} | {lr} | {np} | {to} | {s} | {eff} |".format(
+            "| {v} | {n} | {cr} | {d} | {ld} | {lr} | {np} | {to} | {att} | {s} | {eff} |".format(
                 v=variant,
                 n=a["n"],
                 cr=_fmt(a["clear_rate"]),
@@ -1037,6 +1055,7 @@ def render_markdown(
                 lr=_fmt(a["mean_length_ratio"]),
                 np=_fmt(a["mean_numbers_preserved"]),
                 to=_fmt(a["mean_tokens_out"]),
+                att=_fmt(a.get("mean_attempts")),
                 s=_fmt(a["mean_seconds"]),
                 eff=_fmt(a["clears_per_mtok_out"]),
             )
@@ -1073,7 +1092,7 @@ def render_markdown(
     return "\n".join(L) + "\n"
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--markllm-dir", default=os.environ.get("MARKLLM_DIR"))
     p.add_argument(
@@ -1087,8 +1106,10 @@ def main() -> int:
     )
     p.add_argument(
         "--variants",
-        default="paraphrase:1,paraphrase:3",
-        help="Comma list of <strength>:<candidates> (default: paraphrase:1,paraphrase:3)",
+        default="paraphrase:3",
+        help="Comma list of <strength>:<candidates> (default: paraphrase:3). "
+        "candidates = max rewrite attempts per input; the Layer B loop stops "
+        "early when an attempt passes evaluation.",
     )
     p.add_argument(
         "--restamp-control", action="store_true", help="Also rewrite the unwatermarked control"
@@ -1139,7 +1160,11 @@ def main() -> int:
         action="store_true",
         help="Do not use the persistent MarkLLM serve worker (one-shot subprocesses)",
     )
-    args = p.parse_args()
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     if not args.markllm_dir:
         eprint("error: --markllm-dir (or MARKLLM_DIR) is required")
@@ -1233,9 +1258,9 @@ def main() -> int:
 
     report = render_markdown(config, samples, rows, agg)
     csv_lines = [
-        "doc,seed,variant,kind,before_pos,after_pos,cleared,score_before,score_after,"
-        "score_delta,lexical_divergence,length_ratio,numbers_preserved,urls_preserved,"
-        "tokens_in,tokens_out,seconds,usd,notes"
+        "doc,seed,variant,kind,attempts,evaluator,passed,before_pos,after_pos,cleared,"
+        "score_before,score_after,score_delta,lexical_divergence,length_ratio,"
+        "numbers_preserved,urls_preserved,tokens_in,tokens_out,seconds,usd,notes"
     ]
     for r in rows:
         q = r.get("quality") or {}
@@ -1252,6 +1277,9 @@ def main() -> int:
                     r["seed"],
                     r["variant"],
                     r.get("kind", ""),
+                    r.get("attempts", ""),
+                    r.get("evaluator", ""),
+                    "" if r.get("passed") is None else (1 if r["passed"] else 0),
                     1 if r.get("before_pos") else 0,
                     1 if r.get("after_pos") else 0,
                     "" if r.get("cleared") is None else (1 if r["cleared"] else 0),
@@ -1281,15 +1309,15 @@ def main() -> int:
     eprint("")
     eprint(f"results written to {out_dir}/")
     print("")
-    print("variant          n   clear%  dScore  lexDiv  lenR  nums  tokOut  s/doc  eff/MTok")
-    print("-" * 78)
+    print("variant          n   clear%  dScore  lexDiv  lenR  nums  tokOut  att  s/doc  eff/MTok")
+    print("-" * 82)
     for variant, a in agg.items():
         print(
             f"{variant:<16} {a['n']:>3}  {_fmt(a['clear_rate']):>6}  "
             f"{_fmt(a['mean_score_delta']):>6}  {_fmt(a['mean_lexical_divergence']):>6}  "
             f"{_fmt(a['mean_length_ratio']):>5}  {_fmt(a['mean_numbers_preserved']):>5}  "
-            f"{_fmt(a['mean_tokens_out']):>6}  {_fmt(a['mean_seconds']):>5}  "
-            f"{_fmt(a['clears_per_mtok_out']):>7}"
+            f"{_fmt(a['mean_tokens_out']):>6}  {_fmt(a.get('mean_attempts')):>4}  "
+            f"{_fmt(a['mean_seconds']):>5}  {_fmt(a['clears_per_mtok_out']):>7}"
         )
     return 0
 
