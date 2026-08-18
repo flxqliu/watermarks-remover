@@ -326,4 +326,3 @@ def test_detect_batch_openapi_spec_registered(conn):
     assert status == 200
     assert "/detect/batch" in body["paths"]
     assert "post" in body["paths"]["/detect/batch"]
-

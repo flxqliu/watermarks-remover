@@ -666,7 +666,12 @@ def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
             detections = [score]
             return {"ok": True, "kind": kind, "detections": detections}
         elif kind == "av":
-            return {"ok": True, "kind": kind, "detections": [], "report": inspect_av(path).to_dict()}
+            return {
+                "ok": True,
+                "kind": kind,
+                "detections": [],
+                "report": inspect_av(path).to_dict(),
+            }
         else:
             detections = []
             report = inspect_container(path).to_dict()
