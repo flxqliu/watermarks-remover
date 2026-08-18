@@ -35,9 +35,11 @@ import argparse
 import contextlib
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from shutil import which
@@ -438,6 +440,137 @@ def _score_of(d: dict[str, Any] | None) -> float | None:
     return float(s) if isinstance(s, (int, float)) else None
 
 
+class MarkLLMWorker:
+    """Persistent MarkLLM serve process: one model load, many operations.
+
+    Speaks the JSON-lines protocol of ``detect_text_watermark.py serve``
+    (ready handshake, then watermark/detect/exit requests). Falls back to
+    one-shot subprocesses automatically if it cannot start or dies.
+    """
+
+    def __init__(
+        self,
+        python: str,
+        script: Path,
+        upstream: Path,
+        model: str,
+        timeout: float,
+    ) -> None:
+        self._timeout = timeout
+        cmd = [
+            python,
+            str(script),
+            "serve",
+            "--scheme",
+            SCHEME,
+            "--model",
+            model,
+            "--upstream-dir",
+            str(upstream),
+        ]
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._stderr_tail: list[str] = []
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        ready = self._read_line(timeout)
+        if ready is None or not ready.get("ready"):
+            self.close()
+            raise RuntimeError(
+                "markllm serve did not become ready" + (f": {ready.get('error')}" if ready else ""),
+            )
+        self.info = ready
+
+    def _drain_stderr(self) -> None:
+        for line in self._proc.stderr:
+            self._stderr_tail.append(line.rstrip())
+            if len(self._stderr_tail) > 200:
+                self._stderr_tail.pop(0)
+
+    def _read_line(self, timeout: float) -> dict[str, Any] | None:
+        q: queue.Queue[str] = queue.Queue()
+
+        def _reader() -> None:
+            try:
+                q.put(self._proc.stdout.readline())
+            except Exception as e:
+                q.put(f"__error__:{e}")
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            raise RuntimeError("markllm worker response timed out")
+        line = q.get()
+        if line.startswith("__error__:"):
+            raise RuntimeError(line[len("__error__:") :])
+        if not line:
+            raise RuntimeError("markllm worker closed (EOF)")
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"markllm worker emitted non-JSON: {line[:120]!r}") from None
+        return data if isinstance(data, dict) else None
+
+    def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            self._proc.stdin.write(json.dumps(payload) + "\n")
+            self._proc.stdin.flush()
+            resp = self._read_line(self._timeout)
+        except Exception as e:
+            hint = "; ".join(self._stderr_tail[-3:])
+            raise RuntimeError(f"{e} ({hint})") from None
+        if not resp.get("ok"):
+            raise RuntimeError(resp.get("error") or "markllm worker request failed")
+        return resp
+
+    def watermark(self, prompt: str, seed: int, max_new_tokens: int) -> dict[str, Any]:
+        resp = self._request(
+            {
+                "op": "watermark",
+                "id": seed,
+                "prompt": prompt,
+                "seed": seed,
+                "max_new_tokens": max_new_tokens,
+            }
+        )
+        return {
+            "watermarked": resp["watermarked"],
+            "unwatermarked": resp["unwatermarked"],
+            "watermarked_chars": resp["watermarked_chars"],
+            "unwatermarked_chars": resp["unwatermarked_chars"],
+            "payload": resp,
+        }
+
+    def detect(self, text: str) -> dict[str, Any]:
+        resp = self._request({"op": "detect", "id": 0, "text": text})
+        return {
+            "available": True,
+            "is_watermarked": resp["is_watermarked"],
+            "score": resp.get("score"),
+            "threshold": resp.get("threshold"),
+        }
+
+    def close(self) -> None:
+        if self._proc.poll() is None:
+            try:
+                self._proc.stdin.write(json.dumps({"op": "exit"}) + "\n")
+                self._proc.stdin.flush()
+                self._proc.wait(timeout=10)
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self._proc.terminate()
+                    self._proc.wait(timeout=5)
+        for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
+            with contextlib.suppress(Exception):
+                stream.close()
+
+
 class Benchmark:
     def __init__(self, args: argparse.Namespace, upstream: Path) -> None:
         self.args = args
@@ -453,10 +586,39 @@ class Benchmark:
             if det.available():
                 self.gemini = det
         self.chars_per_token = args.chars_per_token
+        self.worker = None
+        if not args.no_worker:
+            try:
+                self.worker = MarkLLMWorker(
+                    self.python,
+                    self.script,
+                    self.upstream,
+                    args.markllm_model,
+                    args.markllm_timeout,
+                )
+                eprint(f"markllm worker: resident on {self.worker.info.get('device', '?')}")
+            except Exception as e:
+                eprint(f"markllm worker unavailable, using one-shot subprocesses: {e}")
+
+    def _drop_worker(self) -> None:
+        if self.worker is not None:
+            with contextlib.suppress(Exception):
+                self.worker.close()
+        self.worker = None
+
+    def close_worker(self) -> None:
+        self._drop_worker()
 
     # -- step wrappers (monkeypatchable in tests) --------------------------
 
     def watermark_sample(self, prompt_path: Path, seed: int, out_dir: Path) -> dict[str, Any]:
+        if self.worker is not None:
+            prompt = prompt_path.read_text(encoding="utf-8", errors="surrogateescape")
+            try:
+                return self.worker.watermark(prompt, seed, self.args.max_new_tokens)
+            except Exception as e:
+                eprint(f"markllm worker failed ({e}); falling back to one-shot")
+                self._drop_worker()
         return run_watermark(
             self.python,
             self.script,
@@ -470,6 +632,12 @@ class Benchmark:
         )
 
     def detect(self, text: str) -> dict[str, Any]:
+        if self.worker is not None:
+            try:
+                return self.worker.detect(text)
+            except Exception as e:
+                eprint(f"markllm worker failed ({e}); falling back to one-shot")
+                self._drop_worker()
         return run_detect(
             self.python, self.script, self.upstream, text, self.args.markllm_model, DETECT_TIMEOUT
         )
@@ -1001,6 +1169,11 @@ def main() -> int:
         action="store_true",
         help="Skip the Gemini official-detector tier even if keyed",
     )
+    p.add_argument(
+        "--no-worker",
+        action="store_true",
+        help="Do not use the persistent MarkLLM serve worker (one-shot subprocesses)",
+    )
     args = p.parse_args()
 
     if not args.markllm_dir:
@@ -1080,8 +1253,11 @@ def main() -> int:
     if bench.gemini is not None:
         eprint("gemini official-detector tier: enabled")
 
-    samples = bench.generate_samples(workdir)
-    rows = bench.run_variants(samples, workdir)
+    try:
+        samples = bench.generate_samples(workdir)
+        rows = bench.run_variants(samples, workdir)
+    finally:
+        bench.close_worker()
 
     # Attach USD cost using per-doc token estimates.
     for row in rows:

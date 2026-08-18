@@ -56,22 +56,24 @@ def _args(**overrides):
         cost_per_mtok_in=0.0,
         cost_per_mtok_out=0.0,
         no_gemini=True,
+        no_worker=True,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
 
 
-def _make_bench(tmp_path, monkeypatch, **args_overrides):
+def _make_bench(tmp_path, monkeypatch, patch_steps=True, **args_overrides):
     """A Benchmark with all heavy steps faked and controllable."""
     args = _args(out_dir=tmp_path, **args_overrides)
     b = bench.Benchmark(args, Path(args.markllm_dir))
-    monkeypatch.setattr(b, "watermark_sample", _fake_watermark)
-    monkeypatch.setattr(
-        b, "detect", lambda text: DETECT_POS if text.startswith("watermarked") else DETECT_NEG
-    )
-    monkeypatch.setattr(
-        b, "rewrite", lambda text, strength, candidates: (text + " rewritten", _rewrite_stats())
-    )
+    if patch_steps:
+        monkeypatch.setattr(b, "watermark_sample", _fake_watermark)
+        monkeypatch.setattr(
+            b, "detect", lambda text: DETECT_POS if text.startswith("watermarked") else DETECT_NEG
+        )
+        monkeypatch.setattr(
+            b, "rewrite", lambda text, strength, candidates: (text + " rewritten", _rewrite_stats())
+        )
     return b, args
 
 
@@ -319,6 +321,9 @@ class _FakeBench:
         self.gemini = None
         self.chars_per_token = args.chars_per_token
 
+    def close_worker(self):
+        pass
+
     def generate_samples(self, workdir):
         return [
             {
@@ -488,6 +493,112 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
         ],
     )
     assert bench.main() == 0
+
+
+# ---------------------------------------------------------------------------
+# Persistent MarkLLM worker
+# ---------------------------------------------------------------------------
+
+
+class _FakeWorker:
+    info: dict = {"device": "cuda"}  # noqa: RUF012 - test double
+
+    def __init__(self, python, script, upstream, model, timeout):
+        pass
+
+    def watermark(self, prompt, seed, max_new_tokens):
+        return {
+            "watermarked": prompt + " WM",
+            "unwatermarked": prompt + " PL",
+            "watermarked_chars": len(prompt) + 3,
+            "unwatermarked_chars": len(prompt) + 3,
+            "payload": {},
+        }
+
+    def detect(self, text):
+        return dict(DETECT_POS if "WM" in text else DETECT_NEG)
+
+    def close(self):
+        pass
+
+
+def test_worker_used_when_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(bench, "MarkLLMWorker", _FakeWorker)
+    b, _ = _make_bench(tmp_path, monkeypatch, no_worker=False, patch_steps=False)
+    assert b.worker is not None
+    assert b.detect("x WM y")["is_watermarked"] is True
+    assert b.detect("plain text")["is_watermarked"] is False
+
+
+def test_worker_watermark_routing(tmp_path, monkeypatch):
+    monkeypatch.setattr(bench, "MarkLLMWorker", _FakeWorker)
+    b, _ = _make_bench(tmp_path, monkeypatch, no_worker=False, patch_steps=False)
+    p = tmp_path / "prompt.txt"
+    p.write_text("hello", encoding="utf-8")
+    out = b.watermark_sample(p, 1, tmp_path)
+    assert out["watermarked"] == "hello WM"
+    assert out["unwatermarked"] == "hello PL"
+
+
+def test_worker_fallback_on_start_failure(tmp_path, monkeypatch):
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("serve unavailable")
+
+    monkeypatch.setattr(bench, "MarkLLMWorker", _Boom)
+    calls = []
+
+    def fake_detect(py, script, upstream, text, model, timeout):
+        calls.append(text)
+        return dict(DETECT_NEG)
+
+    monkeypatch.setattr(bench, "run_detect", fake_detect)
+    b, _ = _make_bench(tmp_path, monkeypatch, no_worker=False, patch_steps=False)
+    assert b.worker is None
+    r = b.detect("plain text")
+    assert calls == ["plain text"]
+    assert r["is_watermarked"] is False
+
+
+def test_worker_disabled_with_flag(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, no_worker=True)
+    assert b.worker is None
+
+
+def test_handle_serve_request_protocol():
+    import types
+
+    import detect_text_watermark as dt
+
+    class FakeWM:
+        def __init__(self):
+            self.config = types.SimpleNamespace(gen_kwargs={})
+
+        def generate_watermarked_text(self, prompt):
+            return prompt + " WM"
+
+        def generate_unwatermarked_text(self, prompt):
+            return prompt + " PL"
+
+        def detect_watermark(self, text, return_dict=False):
+            wm = text.endswith("WM")
+            return {"is_watermarked": wm, "score": 2.0 if wm else -1.0}
+
+    wm = FakeWM()
+    r = dt._handle_serve_request(
+        wm, {"op": "watermark", "id": 1, "prompt": "hello", "seed": None, "max_new_tokens": 10}, 0.5
+    )
+    assert r["ok"] and r["watermarked"] == "hello WM" and r["id"] == 1
+    r = dt._handle_serve_request(wm, {"op": "detect", "id": 2, "text": "hello WM"}, 0.5)
+    assert r["ok"] and r["is_watermarked"] is True and r["score"] == 2.0
+    r = dt._handle_serve_request(wm, {"op": "detect", "id": 3, "text": "hello PL"}, 0.5)
+    assert r["is_watermarked"] is False
+    r = dt._handle_serve_request(wm, {"op": "nope", "id": 4}, 0.5)
+    assert r["ok"] is False and "unknown op" in r["error"]
+    r = dt._handle_serve_request(wm, {"op": "watermark", "id": 5, "prompt": ""}, 0.5)
+    assert r["ok"] is False
+    r = dt._handle_serve_request(wm, {"op": "exit", "id": 6}, 0.5)
+    assert r["ok"] is True
 
 
 def test_run_cmd_no_rlimit_preexec(monkeypatch):
