@@ -67,8 +67,11 @@ def parse_sitemap(data: bytes) -> tuple[str, list[str]]:
     elif len(data) > MAX_SITEMAP_DECOMPRESSED_BYTES:
         raise ValueError(f"sitemap size exceeds cap ({MAX_SITEMAP_DECOMPRESSED_BYTES} bytes)")
 
-    # stdlib ElementTree does not expand external entities, but internal entity
-    # expansion (billion-laughs) is still possible; reject DTDs outright.
+    # This repo is stdlib-only by policy, so sitemaps use ElementTree. stdlib
+    # ET does not expand external entities (no XXE), but internal entity
+    # expansion (billion-laughs) is still possible, so DTDs/entities are
+    # rejected outright before parsing. If the policy ever changes, swap in
+    # defusedxml.ElementTree with the same DTD rejection as defense in depth.
     if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
         raise ValueError("sitemap declares a DTD / entities; refusing to parse")
 

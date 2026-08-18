@@ -147,6 +147,17 @@ python3 "$SCRIPTS/inspect_text.py" report.docx
 Detection is by magic number plus a control-byte ratio, so text in encodings
 other than UTF-8 keeps working. `--force-text` overrides it everywhere.
 
+### Unrecognized formats are never auto-cleaned
+
+`classify()` labels bytes that match no supported text, image or container
+format as **`unknown`** — it no longer falls back to "text". In auto mode
+`clean_file.py` refuses such files (exit 2, no output written) instead of
+decoding them as UTF-8 and writing back mangled bytes; `--as text` or
+`--force-text` are the explicit opt-ins. `inspect_file.py` reports the file
+as `unknown` (exit 0), and the HTTP service answers `/inspect` with
+`kind: "unknown"` but rejects `/clean` of unknown formats (400 — send a
+filename with a known extension, e.g. `notes.txt`).
+
 ## HTTP service
 
 The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) — the interface the skill uses and the way any web app can integrate without vendoring:
@@ -314,6 +325,12 @@ maintained reimplementation of the ICLR 2025
 
 The backend is **not bundled** and ships no LICENSE file, so it is treated as
 all-rights-reserved: it is cloned at a pinned commit and loaded at runtime.
+Its research-era dependency pins (`requirements-ctrlregen.txt` — e.g.
+`transformers==4.37.2`, `diffusers==0.27.2`) carry published advisories and
+are intentionally not current, so they are only ever installed inside the
+dedicated venv this script creates and never into the main service image;
+`setup_ctrlregen.sh` also re-verifies the pinned commit on existing
+checkouts, not just fresh clones.
 
 ### Bootstrap
 

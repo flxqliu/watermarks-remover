@@ -74,6 +74,11 @@ field and writes it to the output path itself.
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
 
+`/clean` and `/inspect` route by the uploaded `name` extension plus the bytes;
+unrecognized formats answer `kind: "unknown"` (`/inspect`) or 400 (`/clean`).
+When writing a temp file for pasted text, keep a known extension (`.txt` /
+`.md`) in the `name` you send.
+
 The machine-readable contract lives at `$WM/openapi.json` — plug it into any
 OpenAPI tooling (client generators, Swagger UI, editors) instead of hand-rolling
 clients.
@@ -258,6 +263,11 @@ docker run --rm -v "$(pwd)/src:/data:ro" watermarks-remover \
 ```
 
 Or against a local checkout of the repo: `python3 service/scripts/audit_dir.py DIR --json`.
+
+Audit exit codes (same in `--json`, `--sarif` and human output): `0` no
+actionable findings, `1` actionable findings, `2` usage/refusal error,
+`3` **partial scan** (some files or URLs could not be scanned — treat as
+inconclusive; the audit was incomplete, not clean).
 
 ### 5. Report
 
