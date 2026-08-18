@@ -54,7 +54,13 @@ from rewrite_text import _lexical_divergence  # noqa: E402
 from text_detectors import GeminiSynthIDTextDetector  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
 
-DEFAULT_CORPUS = Path(__file__).resolve().parents[2] / "benchmarks" / "corpus"
+_RESOLVED_SCRIPT = Path(__file__).resolve()
+try:
+    DEFAULT_CORPUS = _RESOLVED_SCRIPT.parents[2] / "benchmarks" / "corpus"
+except IndexError:
+    # Container layout (/app/bench_synthid_text.py): no repo root above us;
+    # callers pass --corpus explicitly.
+    DEFAULT_CORPUS = _RESOLVED_SCRIPT.parent / "benchmarks" / "corpus"
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
 SCHEME = "synthid"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -130,8 +136,9 @@ def _repo_commit() -> str | None:
     if git is None:
         return None
     try:
+        repo_root = SCRIPTS_DIR.parents[1] if len(SCRIPTS_DIR.parents) > 1 else SCRIPTS_DIR.parent
         r = subprocess.run(
-            [git, "-C", str(SCRIPTS_DIR.parents[1]), "rev-parse", "HEAD"],
+            [git, "-C", str(repo_root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -676,6 +683,8 @@ class Benchmark:
         """Generate and sanity-check watermarked/unwatermarked pairs."""
         workdir.mkdir(parents=True, exist_ok=True)
         samples: list[dict[str, Any]] = []
+        total = len(self.corpus) * self.args.seeds
+        done = 0
         for doc_id, prompt in self.corpus:
             prompt_path = workdir / f"prompt_{doc_id}.txt"
             prompt_path.write_text(prompt, encoding="utf-8", errors="surrogateescape")
@@ -723,6 +732,9 @@ class Benchmark:
                 if self.gemini is not None:
                     sample["gemini_before"] = self.gemini_detect(wm_text)
                 samples.append(sample)
+                done += 1
+                status = "excluded" if sample.get("excluded") else "ok"
+                eprint(f"[gen {done}/{total}] {doc_id} seed {seed}: {status}")
         return samples
 
     def run_variants(self, samples: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
@@ -857,6 +869,8 @@ class Benchmark:
                             ),
                         }
                     )
+            cleared_count = sum(1 for r in rows if r["doc"] == base["doc"] and r["seed"] == base["seed"] and r.get("cleared"))
+            eprint(f"[removal] {base['doc']} seed {base['seed']}: {len(rows)} rows, {cleared_count} cleared")
         return rows
 
     def _gemini(self, text: str, sample: dict[str, Any]) -> dict[str, Any] | None:
