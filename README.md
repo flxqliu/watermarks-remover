@@ -170,6 +170,10 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
+| POST | `/inspect/batch` | `{"files": [{"file": "<base64>", "name": "notes.md"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "suspicious", "report"}, ...]}` |
+| POST | `/clean/batch` | `{"files": [{"file": "<base64>", "name": "notes.md", "options": {...}}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "cleaned": "<base64>", "report"}, ...]}` |
+
+Batch endpoints loop the same per-file pipeline as `/inspect` and `/clean`, capped at `WATERMARKS_MAX_BATCH_FILES` files per request (default 50). A malformed entry (bad base64, unknown option, unrecognized format) surfaces as that entry's `"ok": false` with an `"error"` string — it never aborts the rest of the batch.
 
 ```bash
 WM="http://127.0.0.1:8765"
@@ -959,6 +963,8 @@ MIT — see [LICENSE](LICENSE).
 - [THU-BPM/MarkLLM](https://github.com/THU-BPM/MarkLLM) (unified toolkit for evaluating LLM watermarking algorithms)
 - Pan et al., [*MarkDiffusion: An Open-Source Toolkit for Generative Watermarking of Latent Diffusion Models*](https://arxiv.org/abs/2509.10569) (JMLR) — the embedding toolkit this repo's optional image-watermark harness wraps — [code](https://github.com/THU-BPM/MarkDiffusion), [docs](https://markdiffusion.readthedocs.io)
 - Zhang et al., [*Watermarks in the Sand: Impossibility of Strong Watermarking for Generative Models*](https://arxiv.org/abs/2311.04378v5) (ICML 2024)
+- Sander et al., [*Watermarking Makes Language Models Radioactive*](https://arxiv.org/abs/2402.14904) — watermarks survive fine-tuning and mark downstream models trained on watermarked data
+- Pan et al., [*Can LLM Watermarks Robustly Prevent Unauthorized Knowledge Distillation?*](https://arxiv.org/abs/2502.11598) — watermark-based provenance and protection against knowledge distillation
 - [google-deepmind/synthid-text](https://github.com/google-deepmind/synthid-text) (research reference; not used for detection here)
 - [aloshdenny/reverse-SynthID](https://github.com/aloshdenny/reverse-SynthID) (research reference)
 - Liu et al., [*Image Watermarks are Removable Using Controllable Regeneration from Clean Noise*](https://arxiv.org/abs/2410.05470) (ICLR 2025) — the pixel-regeneration method the optional CtrlRegen backend implements — [code](https://github.com/yepengliu/CtrlRegen)

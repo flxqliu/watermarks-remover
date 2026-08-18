@@ -12,6 +12,17 @@ Endpoints:
     POST /detect         -> {"file": <base64>, "name": "x.txt"} -> watermark detector reports
     POST /clean          -> {"file": <base64>, "name": "x.png", "options": {...}}
                          -> {"cleaned": <base64>, "report": {...}}
+    POST /inspect/batch  -> {"files": [{"file": <base64>, "name": "x.png"}, ...]}
+                         -> {"results": [{"name", "ok", "kind", "report", "suspicious"}, ...]}
+    POST /clean/batch    -> {"files": [{"file": <base64>, "name": "x.png", "options": {...}}, ...]}
+                         -> {"results": [{"name", "ok", "kind", "cleaned", "report"}, ...]}
+
+Batch endpoints loop the same single-file pipeline as /inspect and /clean; a
+per-file failure (unknown format, oversized name, bad option) shows up as
+that entry's "ok": false with an "error" string and never aborts the rest of
+the batch. Capped at WATERMARKS_MAX_BATCH_FILES entries per request (default
+50) — the existing MAX_BODY_BYTES envelope cap still bounds total payload
+size the same as a single-file request.
 
 Hardening mirrors the CLIs: input size caps, binary-as-text guard, atomic
 writes, loopback-only bind by default, optional bearer API key. Run it as an
@@ -58,6 +69,11 @@ API_KEY = os.environ.get("WATERMARKS_SERVER_API_KEY", "").strip()
 # Body cap for the JSON envelope. Base64 inflates by 4/3, so the decoded file
 # stays well under MAX_INPUT_BYTES for the same cap.
 MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
+
+# Per-request file count cap for /inspect/batch and /clean/batch. MAX_BODY_BYTES
+# already bounds total payload size; this bounds worst-case CPU/thread time from
+# a request packing many tiny files into one call.
+MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
 
 ALLOWED_CLEAN_OPTIONS = {
     "nfkc": bool,
@@ -287,6 +303,91 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
             },
         }
     },
+    "/inspect/batch": {
+        "post": {
+            "summary": f"Inspect up to {MAX_BATCH_FILES} files in one request",
+            "requestBody": _schema(
+                required=True,
+                content={
+                    "application/json": _schema(
+                        schema=_schema(
+                            type="object",
+                            required=["files"],
+                            properties={"files": _schema(type="array", items=_file_request())},
+                        )
+                    )
+                },
+            ),
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "results": _schema(
+                            type="array",
+                            items=_schema(
+                                type="object",
+                                properties={
+                                    "name": _schema(type="string"),
+                                    "ok": _schema(type="boolean"),
+                                    "kind": _schema(
+                                        type="string",
+                                        enum=["text", "image", "container", "unknown"],
+                                    ),
+                                    "suspicious": _schema(type="boolean"),
+                                    "report": _schema(type="object"),
+                                    "error": _schema(type="string"),
+                                },
+                            ),
+                        ),
+                    },
+                )
+            },
+        }
+    },
+    "/clean/batch": {
+        "post": {
+            "summary": f"Clean up to {MAX_BATCH_FILES} files in one request",
+            "requestBody": _schema(
+                required=True,
+                content={
+                    "application/json": _schema(
+                        schema=_schema(
+                            type="object",
+                            required=["files"],
+                            properties={
+                                "files": _schema(type="array", items=_clean_request_schema())
+                            },
+                        )
+                    )
+                },
+            ),
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "results": _schema(
+                            type="array",
+                            items=_schema(
+                                type="object",
+                                properties={
+                                    "name": _schema(type="string"),
+                                    "ok": _schema(type="boolean"),
+                                    "kind": _schema(
+                                        type="string", enum=["text", "image", "container"]
+                                    ),
+                                    "cleaned": _schema(type="string"),
+                                    "report": _schema(type="object"),
+                                    "error": _schema(type="string"),
+                                },
+                            ),
+                        ),
+                    },
+                )
+            },
+        }
+    },
 }
 
 _ERROR_SCHEMA = _schema(
@@ -391,6 +492,172 @@ def _decode_input(body: dict[str, Any]) -> tuple[bytes, str]:
     return data, _safe_name(name or "")
 
 
+def _parse_clean_options(options: Any) -> dict[str, Any]:
+    if options is None:
+        return {}
+    if not isinstance(options, dict):
+        raise ValueError("'options' must be an object")
+    for key, value in options.items():
+        if key not in ALLOWED_CLEAN_OPTIONS:
+            raise ValueError(f"unknown option: {key}")
+        expected_type = ALLOWED_CLEAN_OPTIONS[key]
+        if not isinstance(value, expected_type):
+            type_name = "boolean" if expected_type is bool else "string"
+            raise ValueError(f"option {key!r} must be a {type_name}")
+    return options
+
+
+def _batch_items(
+    body: dict[str, Any],
+) -> list[tuple[str, bytes, dict[str, Any], str | None]]:
+    """Decode a batch request's 'files' array into (name, data, options, error) tuples.
+
+    A malformed individual entry (bad base64, unknown option) becomes an error
+    string paired with that entry rather than raising, so one bad file never
+    aborts the rest of the batch. Only 'files' itself being missing, empty, or
+    over MAX_BATCH_FILES raises — that is a malformed request, not a per-file
+    problem.
+    """
+    files = body.get("files")
+    if not isinstance(files, list):
+        raise ValueError("missing array field 'files'")
+    if not files:
+        raise ValueError("'files' must not be empty")
+    if len(files) > MAX_BATCH_FILES:
+        raise ValueError(f"'files' exceeds the {MAX_BATCH_FILES}-file batch limit")
+
+    items: list[tuple[str, bytes, dict[str, Any], str | None]] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            items.append(("", b"", {}, "each entry in 'files' must be an object"))
+            continue
+        try:
+            data, name = _decode_input(entry)
+        except ValueError as e:
+            fallback_name = entry.get("name") if isinstance(entry.get("name"), str) else ""
+            items.append((fallback_name, b"", {}, str(e)))
+            continue
+        try:
+            options = _parse_clean_options(entry.get("options"))
+        except ValueError as e:
+            items.append((name, b"", {}, str(e)))
+            continue
+        items.append((name, data, options, None))
+    return items
+
+
+def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]:
+    kind = classify_bytes(data, Path(name).suffix)
+    if kind == "unknown":
+        return {
+            "ok": True,
+            "kind": "unknown",
+            "report": {"note": "unrecognized format; use a filename with a known extension"},
+            "suspicious": False,
+        }
+    with tempfile.TemporaryDirectory(prefix="wm-inspect-") as tmp:
+        path = _tmp_path(Path(tmp), name or "input")
+        path.write_bytes(data)
+        if kind == "text":
+            if looks_binary(data):
+                raise ValueError(
+                    "refusing to inspect bytes that look like a binary container as text"
+                )
+            raw_text = data.decode("utf-8", errors="surrogateescape")
+            report = inspect_text(raw_text).to_dict()
+            s_rep = score_text_stylometry(raw_text, path=name or "<text>")
+            report["stylometry"] = s_rep.to_dict()
+            if run_detect:
+                report["text_detectors"] = run_all_text_detectors(raw_text)
+        elif kind == "image":
+            report = inspect_image(path).to_dict()
+        else:
+            report = inspect_container(path).to_dict()
+    detected_wm = any(
+        entry.get("available") and entry.get("is_watermarked")
+        for entry in report.get("text_detectors") or []
+    )
+    suspicious = (
+        bool(report.get("suspicious_total"))
+        or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
+        or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
+        or detected_wm
+    )
+    return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
+
+
+def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str, Any]:
+    kind = classify_bytes(data, Path(name).suffix)
+    if kind == "unknown":
+        raise ValueError(
+            "unrecognized file format; use a filename with a known extension "
+            "(e.g. notes.txt) or a supported image/container name"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="wm-clean-") as tmp:
+        tmpdir = Path(tmp)
+        src = _tmp_path(tmpdir, name or "input")
+        src.write_bytes(data)
+        if kind == "text":
+            if looks_binary(data):
+                raise ValueError(
+                    "refusing to clean bytes that look like a binary container as text"
+                )
+            text = data.decode("utf-8", errors="surrogateescape")
+            detect_before = bool(options.get("detect_before"))
+            detect_after = bool(options.get("detect_after"))
+            detector_reports: dict[str, Any] = {}
+            if detect_before:
+                detector_reports["before"] = run_text_detectors(text)
+            cleaned, stats = clean_text(
+                text,
+                nfkc=bool(options.get("nfkc")),
+                aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
+            )
+            if detect_after:
+                detector_reports["after"] = run_text_detectors(cleaned)
+            cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
+            report: dict[str, Any] = {"kind": "text", "stats": stats, "length": len(cleaned)}
+            if detector_reports:
+                report["text_detectors"] = detector_reports
+        elif kind == "image":
+            dest = tmpdir / "out.png"
+            strip_all = not bool(options.get("keep_non_ai_metadata"))
+            if "strip_all_metadata" in options:
+                strip_all = bool(options["strip_all_metadata"])
+            remove_pixel = options.get("remove_pixel")
+            if remove_pixel not in (None, "ctrlregen", "diffusion"):
+                raise ValueError("remove_pixel must be one of: ctrlregen, diffusion")
+            result = clean_image(
+                src,
+                dest,
+                strip_all_metadata=strip_all,
+                remove_pixel=remove_pixel,
+            )
+            if bool(options.get("detect_before")) and result.get("synthid_before") is None:
+                result["synthid_before"] = run_synthid_score(src)
+            if bool(options.get("detect_after")) and result.get("synthid_after") is None:
+                result["synthid_after"] = run_synthid_score(dest)
+            cleaned_bytes = dest.read_bytes()
+            report = {"kind": "image", **result}
+        else:
+            dest = _tmp_path(tmpdir, f"out{Path(name).suffix}")
+            result = clean_container(
+                src, dest, also_layer_a_text=bool(options.get("also_layer_a_text", True))
+            )
+            cleaned_bytes = dest.read_bytes()
+            report = {"kind": "container", **result}
+        report.pop("input", None)
+        report.pop("output", None)
+
+    return {
+        "ok": True,
+        "kind": kind,
+        "cleaned": base64.b64encode(cleaned_bytes).decode("ascii"),
+        "report": report,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"watermarks-remover/{VERSION}"
 
@@ -446,7 +713,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._respond(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
             return
-        if path not in ("/inspect", "/clean", "/detect"):
+        if path not in ("/inspect", "/clean", "/detect", "/inspect/batch", "/clean/batch"):
             self._respond(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
         body = self._read_json()
@@ -459,17 +726,18 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         try:
-            data, name = _decode_input(body)
-        except ValueError as e:
-            self._respond(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(e)})
-            return
-        try:
-            if path == "/inspect":
-                self._handle_inspect(data, name, body)
-            elif path == "/detect":
-                self._handle_detect(data, name)
+            if path == "/inspect/batch":
+                self._handle_inspect_batch(body)
+            elif path == "/clean/batch":
+                self._handle_clean_batch(body)
             else:
-                self._handle_clean(data, name, body)
+                data, name = _decode_input(body)
+                if path == "/inspect":
+                    self._handle_inspect(data, name, body)
+                elif path == "/detect":
+                    self._handle_detect(data, name)
+                else:
+                    self._handle_clean(data, name, body)
         except ValueError as e:
             self._respond(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(e)})
         except Exception as e:
@@ -479,52 +747,24 @@ class Handler(BaseHTTPRequestHandler):
             )
 
     def _handle_inspect(self, data: bytes, name: str, body: dict[str, Any]) -> None:
-        kind = classify_bytes(data, Path(name).suffix)
-        if kind == "unknown":
-            self._respond(
-                HTTPStatus.OK,
-                {
-                    "ok": True,
-                    "kind": "unknown",
-                    "report": {
-                        "note": "unrecognized format; use a filename with a known extension",
-                    },
-                    "suspicious": False,
-                },
-            )
-            return
         run_detect = body.get("detect") is True
-        with tempfile.TemporaryDirectory(prefix="wm-inspect-") as tmp:
-            path = _tmp_path(Path(tmp), name or "input")
-            path.write_bytes(data)
-            if kind == "text":
-                if looks_binary(data):
-                    raise ValueError(
-                        "refusing to inspect bytes that look like a binary container as text"
-                    )
-                raw_text = data.decode("utf-8", errors="surrogateescape")
-                report = inspect_text(raw_text).to_dict()
-                s_rep = score_text_stylometry(raw_text, path=name or "<text>")
-                report["stylometry"] = s_rep.to_dict()
-                if run_detect:
-                    report["text_detectors"] = run_all_text_detectors(raw_text)
-            elif kind == "image":
-                report = inspect_image(path).to_dict()
-            else:
-                report = inspect_container(path).to_dict()
-        detected_wm = any(
-            entry.get("available") and entry.get("is_watermarked")
-            for entry in report.get("text_detectors") or []
-        )
-        suspicious = (
-            bool(report.get("suspicious_total"))
-            or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
-            or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
-            or detected_wm
-        )
-        self._respond(
-            HTTPStatus.OK, {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
-        )
+        self._respond(HTTPStatus.OK, _inspect_payload(data, name, run_detect))
+
+    def _handle_inspect_batch(self, body: dict[str, Any]) -> None:
+        items = _batch_items(body)
+        run_detect = body.get("detect") is True
+        results = []
+        for name, data, _options, error in items:
+            if error is not None:
+                results.append({"name": name, "ok": False, "error": error})
+                continue
+            try:
+                payload = _inspect_payload(data, name, run_detect)
+            except ValueError as e:
+                results.append({"name": name, "ok": False, "error": str(e)})
+                continue
+            results.append({"name": name, **payload})
+        self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
     def _handle_detect(self, data: bytes, name: str) -> None:
         kind = classify_bytes(data, Path(name).suffix)
@@ -570,89 +810,23 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(HTTPStatus.OK, {"ok": True, "kind": kind, "detections": detections})
 
     def _handle_clean(self, data: bytes, name: str, body: dict[str, Any]) -> None:
-        kind = classify_bytes(data, Path(name).suffix)
-        if kind == "unknown":
-            raise ValueError(
-                "unrecognized file format; use a filename with a known extension "
-                "(e.g. notes.txt) or a supported image/container name"
-            )
-        options = body.get("options")
-        if options is None:
-            options = {}
-        if not isinstance(options, dict):
-            raise ValueError("'options' must be an object")
-        for key, value in options.items():
-            if key not in ALLOWED_CLEAN_OPTIONS:
-                raise ValueError(f"unknown option: {key}")
-            expected_type = ALLOWED_CLEAN_OPTIONS[key]
-            if not isinstance(value, expected_type):
-                type_name = "boolean" if expected_type is bool else "string"
-                raise ValueError(f"option {key!r} must be a {type_name}")
+        options = _parse_clean_options(body.get("options"))
+        self._respond(HTTPStatus.OK, _clean_payload(data, name, options))
 
-        with tempfile.TemporaryDirectory(prefix="wm-clean-") as tmp:
-            tmpdir = Path(tmp)
-            src = _tmp_path(tmpdir, name or "input")
-            src.write_bytes(data)
-            if kind == "text":
-                if looks_binary(data):
-                    raise ValueError(
-                        "refusing to clean bytes that look like a binary container as text"
-                    )
-                text = data.decode("utf-8", errors="surrogateescape")
-                detect_before = bool(options.get("detect_before"))
-                detect_after = bool(options.get("detect_after"))
-                detector_reports: dict[str, Any] = {}
-                if detect_before:
-                    detector_reports["before"] = run_text_detectors(text)
-                cleaned, stats = clean_text(
-                    text,
-                    nfkc=bool(options.get("nfkc")),
-                    aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
-                )
-                if detect_after:
-                    detector_reports["after"] = run_text_detectors(cleaned)
-                cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
-                report: dict[str, Any] = {"kind": "text", "stats": stats, "length": len(cleaned)}
-                if detector_reports:
-                    report["text_detectors"] = detector_reports
-            elif kind == "image":
-                dest = tmpdir / "out.png"
-                strip_all = not bool(options.get("keep_non_ai_metadata"))
-                if "strip_all_metadata" in options:
-                    strip_all = bool(options["strip_all_metadata"])
-                remove_pixel = options.get("remove_pixel")
-                if remove_pixel not in (None, "ctrlregen", "diffusion"):
-                    raise ValueError("remove_pixel must be one of: ctrlregen, diffusion")
-                result = clean_image(
-                    src,
-                    dest,
-                    strip_all_metadata=strip_all,
-                    remove_pixel=remove_pixel,
-                )
-                if bool(options.get("detect_before")) and result.get("synthid_before") is None:
-                    result["synthid_before"] = run_synthid_score(src)
-                if bool(options.get("detect_after")) and result.get("synthid_after") is None:
-                    result["synthid_after"] = run_synthid_score(dest)
-                cleaned_bytes = dest.read_bytes()
-                report = {"kind": "image", **result}
-            else:
-                dest = _tmp_path(tmpdir, f"out{Path(name).suffix}")
-                result = clean_container(
-                    src, dest, also_layer_a_text=bool(options.get("also_layer_a_text", True))
-                )
-                cleaned_bytes = dest.read_bytes()
-                report = {"kind": "container", **result}
-            report.pop("input", None)
-            report.pop("output", None)
-        self._respond(
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "kind": kind,
-                "cleaned": base64.b64encode(cleaned_bytes).decode("ascii"),
-                "report": report,
-            },
-        )
+    def _handle_clean_batch(self, body: dict[str, Any]) -> None:
+        items = _batch_items(body)
+        results = []
+        for name, data, options, error in items:
+            if error is not None:
+                results.append({"name": name, "ok": False, "error": error})
+                continue
+            try:
+                payload = _clean_payload(data, name, options)
+            except ValueError as e:
+                results.append({"name": name, "ok": False, "error": str(e)})
+                continue
+            results.append({"name": name, **payload})
+        self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
 
 def main() -> int:
