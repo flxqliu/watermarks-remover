@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from av_meta import clean_av, inspect_av
 from common import (
     MAX_INPUT_BYTES,
     eprint,
@@ -238,7 +239,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                     type="object",
                     properties={
                         "ok": _schema(type="boolean"),
-                        "kind": _schema(type="string", enum=["text", "image", "container"]),
+                        "kind": _schema(type="string", enum=["text", "image", "container", "av"]),
                         "suspicious": _schema(type="boolean"),
                         "report": _schema(type="object"),
                     },
@@ -258,7 +259,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                     type="object",
                     properties={
                         "ok": _schema(type="boolean"),
-                        "kind": _schema(type="string", enum=["text", "image", "container"]),
+                        "kind": _schema(type="string", enum=["text", "image", "container", "av"]),
                         "cleaned": _schema(
                             type="string", description="Base64-encoded cleaned file bytes"
                         ),
@@ -280,7 +281,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                     type="object",
                     properties={
                         "ok": _schema(type="boolean"),
-                        "kind": _schema(type="string", enum=["text", "image", "container"]),
+                        "kind": _schema(type="string", enum=["text", "image", "container", "av"]),
                         "detections": _schema(type="array", items=_schema(type="object")),
                     },
                 )
@@ -510,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
                     report["text_detectors"] = run_all_text_detectors(raw_text)
             elif kind == "image":
                 report = inspect_image(path).to_dict()
+            elif kind == "av":
+                report = inspect_av(path).to_dict()
             else:
                 report = inspect_container(path).to_dict()
         detected_wm = any(
@@ -635,6 +638,14 @@ class Handler(BaseHTTPRequestHandler):
                     result["synthid_after"] = run_synthid_score(dest)
                 cleaned_bytes = dest.read_bytes()
                 report = {"kind": "image", **result}
+            elif kind == "av":
+                dest = _tmp_path(tmpdir, f"out{Path(name).suffix or '.bin'}")
+                strip_all = not bool(options.get("keep_non_ai_metadata"))
+                if "strip_all_metadata" in options:
+                    strip_all = bool(options["strip_all_metadata"])
+                result = clean_av(src, dest, strip_all_metadata=strip_all)
+                cleaned_bytes = dest.read_bytes()
+                report = {"kind": "av", **result}
             else:
                 dest = _tmp_path(tmpdir, f"out{Path(name).suffix}")
                 result = clean_container(

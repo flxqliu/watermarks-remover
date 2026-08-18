@@ -19,7 +19,7 @@ Agent skill + stdlib Python service to strip **multi-vendor AI provenance marks*
 | --- | --- | --- |
 | **A** | Invisible Unicode, exotic spaces, bidi, tag chars | Deterministic Python scripts |
 | **B** | Statistical (token-sampling) text watermarks | Agent rewrite + optional `rewrite_text.py` hook |
-| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, BMP, GIF, TIFF, SVG, PDF, DOCX, EPUB, ODT, HTML, Markdown |
+| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, AVIF, HEIC, BMP, GIF, TIFF, SVG, PDF, DOCX, XLSX, PPTX, EPUB, ODT, HTML, Markdown, MP4/MOV/M4A/M4V, WAV, MP3 |
 
 Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style marks.
 
@@ -708,6 +708,9 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | ODT | meta.xml | Drop generator / AI-ish meta |
 | HTML | meta, JSON-LD, data-ai* | Strip tags/attrs |
 | Markdown | YAML frontmatter AI keys | Drop keys + Layer A body |
+| MP4 / MOV / M4A / M4V | ISOBMFF `jumb`/`uuid` boxes (same mechanism as AVIF/HEIC) + `moov/udta` generator tags | Drop boxes |
+| WAV | RIFF `LIST INFO` chunk, embedded `id3 ` chunk | Drop chunks |
+| MP3 | ID3v2 frames (v2.3/v2.4 per-frame; v2.2 whole-tag) | Drop matched frames or whole tag |
 
 #### Why PDF needs qpdf, not just exiftool
 
