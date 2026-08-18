@@ -147,6 +147,17 @@ python3 "$SCRIPTS/inspect_text.py" report.docx
 Detection is by magic number plus a control-byte ratio, so text in encodings
 other than UTF-8 keeps working. `--force-text` overrides it everywhere.
 
+### Unrecognized formats are never auto-cleaned
+
+`classify()` labels bytes that match no supported text, image or container
+format as **`unknown`** — it no longer falls back to "text". In auto mode
+`clean_file.py` refuses such files (exit 2, no output written) instead of
+decoding them as UTF-8 and writing back mangled bytes; `--as text` or
+`--force-text` are the explicit opt-ins. `inspect_file.py` reports the file
+as `unknown` (exit 0), and the HTTP service answers `/inspect` with
+`kind: "unknown"` but rejects `/clean` of unknown formats (400 — send a
+filename with a known extension, e.g. `notes.txt`).
+
 ## HTTP service
 
 The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) — the interface the skill uses and the way any web app can integrate without vendoring:
@@ -368,6 +379,12 @@ maintained reimplementation of the ICLR 2025
 
 The backend is **not bundled** and ships no LICENSE file, so it is treated as
 all-rights-reserved: it is cloned at a pinned commit and loaded at runtime.
+Its research-era dependency pins (`requirements-ctrlregen.txt` — e.g.
+`transformers==4.37.2`, `diffusers==0.27.2`) carry published advisories and
+are intentionally not current, so they are only ever installed inside the
+dedicated venv this script creates and never into the main service image;
+`setup_ctrlregen.sh` also re-verifies the pinned commit on existing
+checkouts, not just fresh clones.
 
 ### Bootstrap
 
@@ -384,12 +401,16 @@ NOAI_WATERMARK_DIR=~/noai-watermark \
 
 On Windows use `setup_ctrlregen.ps1` (same flags as `-Dir`, `-Ref`, `-Python`);
 the venv lands in `.venv\Scripts\`, which `clean_image.py` already resolves.
-It picks the torch wheel index from the GPU's **compute capability** rather
-than the CUDA version `nvidia-smi` prints — that number is the maximum the
-*driver* supports, and drivers are backward compatible, so deriving the wheel
-tag from it installs `cu130` on a Pascal card whose kernels were dropped in
-`cu128`. The script forces `cu126` below compute capability 7.5 and then
-verifies the result with `torch.cuda.get_arch_list()`.
+It probes the published PyTorch wheel indices and picks the highest one at or
+below the CUDA version `nvidia-smi` prints that actually exists — that number
+is the maximum the *driver* supports, and drivers are backward compatible, so a
+driver reporting 13.1 (no published `cu131`) installs `cu130`. Below compute
+capability 7.5 it forces `cu126`, the last index whose wheels still carry
+Maxwell/Pascal/Volta kernels. It installs `torch` **and** `torchvision`
+together from that index so the dependency install cannot swap them for CPU
+builds from PyPI, then verifies after install that `torch.cuda.is_available()`
+is true — if a GPU was detected but torch ends up CPU-only, the script warns
+loudly and exits non-zero instead of pretending the setup succeeded.
 
 ### From `clean_image.py`
 

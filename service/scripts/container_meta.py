@@ -690,13 +690,46 @@ MAX_ZIP_DECOMPRESSED_BYTES = 128 * 1024 * 1024
 
 
 def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
-    """Reject zip bombs before decompression (ZipInfo.file_size is stored)."""
-    budget[0] += info.file_size
-    if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
+    """Fast-path zip-bomb guard on the declared member size.
+
+    A single member whose *declared* size already exceeds the cap is
+    rejected before any decompression. The authoritative accounting lives in
+    _read_zip_member, which charges **actual** decompressed bytes to the
+    shared budget: ZipInfo.file_size comes from the archive central
+    directory and is attacker-controlled, so trusting it for the cumulative
+    limit would let a crafted archive declare a tiny size and still expand
+    to gigabytes.
+    """
+    if info.file_size > MAX_ZIP_DECOMPRESSED_BYTES:
         raise ZipBudgetExceeded(
             "zip decompressed size exceeds cap "
             f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
         )
+
+
+def _read_zip_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list[int]) -> bytes:
+    """Read one zip member, charging real decompressed bytes to the budget.
+
+    Streams the member in chunks so the cumulative cap is enforced on bytes
+    actually produced, not on the declared ``file_size``; raises
+    ``ZipBudgetExceeded`` the moment the cap is crossed, before the whole
+    member is buffered.
+    """
+    _check_zip_budget(info, budget)
+    with zf.open(info) as stream:
+        chunks: list[bytes] = []
+        while True:
+            chunk = stream.read(1 << 16)
+            if not chunk:
+                break
+            budget[0] += len(chunk)
+            if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
+                raise ZipBudgetExceeded(
+                    "zip decompressed size exceeds cap "
+                    f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _is_docx_meta_part(name: str) -> bool:
@@ -722,7 +755,7 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
                     name,
                     re.I,
                 ):
-                    raw = zf.read(name)
+                    raw = _read_zip_member(zf, info, budget)
                     img_fmt = detect_image_format(raw)
                     sub_c2pa, sub_ai, sub_findings = False, False, []
                     if img_fmt == "png":
@@ -754,7 +787,7 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
                 # vendor names such as "Claude" without being AI-generated metadata.
                 if not _is_docx_meta_part(name):
                     continue
-                raw = zf.read(name)
+                raw = _read_zip_member(zf, info, budget)
                 c2, ai, hits = _blob_hits(raw)
                 if c2 or ai:
                     if c2:
@@ -922,6 +955,83 @@ def _prune_dangling_relationships(
     return new.encode("utf-8"), dropped[0]
 
 
+def _prune_odt_manifest_entries(raw: bytes, dropped: set[str]) -> tuple[bytes, int]:
+    """Remove manifest file-entry elements pointing at dropped parts.
+
+    ODF packages list every member in META-INF/manifest.xml; dropping a part
+    (e.g. one carrying AI/C2PA markers) without removing its entry makes
+    readers flag the package as damaged. full-path is matched
+    attribute-order-independently, mirroring _prune_dangling_relationships.
+    The package-root entry (full-path="/") and entries for surviving parts
+    are left untouched.
+    """
+    text = raw.decode("utf-8", errors="replace")
+    removed = [0]
+
+    def _full_path(tag: str) -> str:
+        m = re.search(r'\bfull-path\s*=\s*"([^"]*)"', tag, re.I)
+        return m.group(1) if m else ""
+
+    def _drop(m: re.Match[str]) -> str:
+        tag = m.group(0)
+        path = posixpath.normpath(_full_path(tag).lstrip("/"))
+        if path in ("", "."):
+            return tag  # package root — never pruned
+        if path in dropped:
+            removed[0] += 1
+            return ""
+        return tag
+
+    new = re.sub(r"<manifest:file-entry\b[^>]*/>", _drop, text, flags=re.I)
+    return new.encode("utf-8"), removed[0]
+
+
+def _prune_opf_manifest(raw: bytes, opf_name: str, dropped: set[str]) -> tuple[bytes, int]:
+    """Remove OPF <item> entries pointing at dropped parts (and spine refs).
+
+    The package document lists every content part; a dropped part that is
+    still referenced makes EPUB readers reject the book. href values are
+    relative to the package document directory, and <itemref> spine entries
+    for removed items are pruned too so no idref dangles.
+    """
+    base = posixpath.dirname(opf_name)
+    text = raw.decode("utf-8", errors="replace")
+    removed = [0]
+    removed_ids: set[str] = set()
+
+    def _attr(tag: str, name: str) -> str:
+        m = re.search(rf'\b{name}\s*=\s*"([^"]*)"', tag, re.I)
+        return m.group(1) if m else ""
+
+    def _drop_item(m: re.Match[str]) -> str:
+        tag = m.group(0)
+        href = _attr(tag, "href")
+        if not href:
+            return tag
+        resolved = posixpath.normpath(posixpath.join(base, href))
+        if resolved in dropped:
+            removed[0] += 1
+            item_id = _attr(tag, "id")
+            if item_id:
+                removed_ids.add(item_id)
+            return ""
+        return tag
+
+    new = re.sub(r"<item\b[^>]*/>", _drop_item, text, flags=re.I)
+
+    if removed_ids:
+
+        def _drop_itemref(m: re.Match[str]) -> str:
+            tag = m.group(0)
+            if _attr(tag, "idref") in removed_ids:
+                removed[0] += 1
+                return ""
+            return tag
+
+        new = re.sub(r"<itemref\b[^>]*/>", _drop_itemref, new, flags=re.I)
+    return new.encode("utf-8"), removed[0]
+
+
 def _scrub_ooxml_zip(
     data: bytes, fmt: str, *, also_layer_a_text: bool = True
 ) -> tuple[bytes, list[str]]:
@@ -932,9 +1042,9 @@ def _scrub_ooxml_zip(
     kept: list[tuple[zipfile.ZipInfo, bytes]] = []
     with zipfile.ZipFile(io.BytesIO(data)) as zin:
         for info in zin.infolist():
-            name = info.filename
             _check_zip_budget(info, budget)
-            raw = zin.read(name)
+            name = info.filename
+            raw = _read_zip_member(zin, info, budget)
 
             # 1. Clean embedded media (PNG, JPEG, WebP, AVIF, HEIC, GIF, BMP, TIFF, SVG)
             if re.search(
@@ -1083,7 +1193,7 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for info in zf.infolist():
                 _check_zip_budget(info, budget)
-                raw = zf.read(info.filename)
+                raw = _read_zip_member(zf, info, budget)
                 c2, ai, hits = _blob_hits(raw)
                 if c2 or ai:
                     if c2:
@@ -1092,7 +1202,9 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
                         has_ai = True
                     findings.append(f"{info.filename}: {', '.join(hits[:6])}")
             if "meta.xml" in zf.namelist():
-                meta = zf.read("meta.xml").decode("utf-8", errors="replace")
+                meta = _read_zip_member(zf, zf.getinfo("meta.xml"), budget).decode(
+                    "utf-8", errors="replace"
+                )
                 if re.search(r"generator|claude|openai|anthropic|gemini", meta, re.I):
                     has_ai = True
                     findings.append("meta.xml generator-like fields")
@@ -1103,18 +1215,16 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
 
 def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, list[str]]:
     actions: list[str] = []
-    out_buf = io.BytesIO()
     budget = [0]
     layer_removed = 0
     layer_replaced = 0
-    with (
-        zipfile.ZipFile(io.BytesIO(data)) as zin,
-        zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout,
-    ):
+    kept: list[tuple[zipfile.ZipInfo, bytes]] = []
+    dropped: set[str] = set()
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
         for info in zin.infolist():
-            name = info.filename
             _check_zip_budget(info, budget)
-            raw = zin.read(name)
+            name = info.filename
+            raw = _read_zip_member(zin, info, budget)
             if name == "meta.xml":
                 text = raw.decode("utf-8", errors="replace")
                 new, n = re.subn(
@@ -1150,6 +1260,7 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
                     "META-INF/manifest.xml",
                 ):
                     actions.append(f"drop part {name} (AI/C2PA markers)")
+                    dropped.add(name)
                     continue
             # Layer A over the visible paragraph text of the body part.
             if also_layer_a_text and name == "content.xml":
@@ -1159,6 +1270,26 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
                     layer_removed += r
                     layer_replaced += rp
                     raw = new.encode("utf-8")
+            kept.append((info, raw))
+
+    # Two-pass: rewrite META-INF/manifest.xml now that the dropped set is
+    # known. The manifest precedes the dropped parts in the archive, so a
+    # single pass cannot remove entries for parts dropped later in the loop.
+    if dropped:
+        rewritten: list[tuple[zipfile.ZipInfo, bytes]] = []
+        for info, part_raw in kept:
+            out_raw = part_raw
+            if info.filename == "META-INF/manifest.xml":
+                pruned, n = _prune_odt_manifest_entries(part_raw, dropped)
+                if n:
+                    actions.append(f"drop manifest entries x{n}")
+                    out_raw = pruned
+            rewritten.append((info, out_raw))
+        kept = rewritten
+
+    out_buf = io.BytesIO()
+    with zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for info, raw in kept:
             zout.writestr(info, raw)
     if layer_removed or layer_replaced:
         actions.append(f"layer A text: removed={layer_removed} replaced={layer_replaced}")
@@ -1207,7 +1338,10 @@ def _epub_encrypted_parts(data: bytes) -> set[str]:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             if "META-INF/encryption.xml" not in zf.namelist():
                 return set()
-            xml = zf.read("META-INF/encryption.xml").decode("utf-8", errors="replace")
+            budget: list[int] = [0]
+            xml = _read_zip_member(zf, zf.getinfo("META-INF/encryption.xml"), budget).decode(
+                "utf-8", errors="replace"
+            )
     except (zipfile.BadZipFile, KeyError):
         return set()
     names: set[str] = set()
@@ -1236,7 +1370,7 @@ def inspect_epub(data: bytes) -> tuple[bool, bool, list[str], dict]:
                 if name in encrypted:
                     findings.append(f"{name}: encrypted content (skipped)")
                     continue
-                raw = zf.read(name)
+                raw = _read_zip_member(zf, info, budget)
                 if name.lower().endswith((".xhtml", ".html", ".htm")):
                     text = raw.decode("utf-8", errors="surrogateescape")
                     c2, ai, sub, _ = inspect_html(text)
@@ -1308,7 +1442,8 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
     fonts) are kept so the book stays readable. Parts listed in
     META-INF/encryption.xml are copied verbatim — their bytes are ciphertext,
     so any rewrite would corrupt them. Non-content parts carrying AI/C2PA
-    markers are dropped.
+    markers are dropped, and the OPF manifest is pruned afterwards so no
+    dropped part stays referenced.
     """
     from text_unicode import clean_text  # local import to avoid cycles
 
@@ -1317,20 +1452,18 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
     layer_removed = 0
     layer_replaced = 0
     encrypted = _epub_encrypted_parts(data)
-    out_buf = io.BytesIO()
-    with (
-        zipfile.ZipFile(io.BytesIO(data)) as zin,
-        zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout,
-    ):
+    kept: list[tuple[zipfile.ZipInfo, bytes]] = []
+    dropped: set[str] = set()
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
         for info in zin.infolist():
-            name = info.filename
             _check_zip_budget(info, budget)
-            raw = zin.read(name)
+            name = info.filename
+            raw = _read_zip_member(zin, info, budget)
             low = name.lower()
 
             # Encrypted parts are opaque ciphertext: pass through untouched.
             if name in encrypted:
-                zout.writestr(info, raw)
+                kept.append((info, raw))
                 continue
 
             # 1. Embedded raster / vector media: strip metadata
@@ -1360,7 +1493,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                 if any("drop" in a.lower() for a in sub_actions) and cleaned != raw:
                     actions.append(f"clean embedded media in {name} ({', '.join(sub_actions[:2])})")
                     raw = cleaned
-                zout.writestr(info, raw)
+                kept.append((info, raw))
                 continue
 
             # 2. XHTML content: strip AI meta/JSON-LD, then Layer A
@@ -1376,7 +1509,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                         layer_replaced += stats["replaced_count"]
                         text = text2
                 raw = text.encode("utf-8", errors="surrogateescape")
-                zout.writestr(info, raw)
+                kept.append((info, raw))
                 continue
 
             # 3. Package document (OPF): scrub AI-ish metadata
@@ -1386,19 +1519,38 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
                 if sub_actions and sub_actions != ["no OPF metadata removed"]:
                     actions.extend(f"{name}: {a}" for a in sub_actions)
                 raw = new_text.encode("utf-8", errors="surrogateescape")
-                zout.writestr(info, raw)
+                kept.append((info, raw))
                 continue
 
             # 4. Other parts: drop non-content parts carrying AI/C2PA markers
             c2, ai, _hits = _blob_hits(raw)
             if (c2 or ai) and not _epub_content_part(name):
                 actions.append(f"drop part {name} (AI/C2PA markers)")
+                dropped.add(name)
                 continue
 
             # 5. mimetype must stay first and stored — it already is, since we
             #    write in the original entry order; force stored compression.
             if low == "mimetype":
                 info.compress_type = zipfile.ZIP_STORED
+            kept.append((info, raw))
+
+    # Two-pass: prune the OPF manifest now that the dropped set is known.
+    if dropped:
+        rewritten: list[tuple[zipfile.ZipInfo, bytes]] = []
+        for info, part_raw in kept:
+            out_raw = part_raw
+            if info.filename.lower().endswith(".opf"):
+                pruned, n = _prune_opf_manifest(part_raw, info.filename, dropped)
+                if n:
+                    actions.append(f"prune OPF manifest entries x{n}")
+                    out_raw = pruned
+            rewritten.append((info, out_raw))
+        kept = rewritten
+
+    out_buf = io.BytesIO()
+    with zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for info, raw in kept:
             zout.writestr(info, raw)
 
     if layer_removed or layer_replaced:
@@ -1616,6 +1768,7 @@ def inspect_container(path: Path) -> ContainerInspectReport:
         from text_unicode import inspect_text  # local import to avoid cycles
 
         encrypted = _epub_encrypted_parts(data)
+        budget: list[int] = [0]
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 for info in zf.infolist():
@@ -1623,7 +1776,9 @@ def inspect_container(path: Path) -> ContainerInspectReport:
                         continue
                     if info.filename.lower().endswith((".xhtml", ".html", ".htm")):
                         ta = inspect_text(
-                            zf.read(info.filename).decode("utf-8", errors="surrogateescape")
+                            _read_zip_member(zf, info, budget).decode(
+                                "utf-8", errors="surrogateescape"
+                            )
                         ).to_dict()
                         layer_a_total += ta["suspicious_total"]
                         for h in ta["hits"]:

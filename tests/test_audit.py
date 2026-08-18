@@ -389,6 +389,27 @@ def test_fetch_revalidates_redirect_before_second_connection(monkeypatch):
     assert connections == 1
 
 
+def test_audit_website_partial_scan_exit_3(monkeypatch):
+    """A URL that fails to fetch makes the audit partial: exit 3, distinct
+    from both "clean" (0) and "actionable findings" (1)."""
+
+    def _fetch(*_args, **_kwargs):
+        raise ValueError("connection refused")
+
+    monkeypatch.setattr(
+        audit_website,
+        "collect_urls",
+        lambda *_a, **_k: ["https://example.com/1", "https://example.com/2"],
+    )
+    monkeypatch.setattr(audit_website, "fetch", _fetch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["audit_website.py", "--sitemap", "https://example.com/sitemap.xml"],
+    )
+    assert audit_website.main() == 3
+
+
 def test_main_rejects_private_base_cleanly(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,

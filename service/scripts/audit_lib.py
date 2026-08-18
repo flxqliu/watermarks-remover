@@ -84,6 +84,18 @@ def scan_file(
             "notes": report.notes,
         }
 
+    if kind == "unknown":
+        return {
+            "path": name,
+            "kind": "unknown",
+            "has_c2pa": False,
+            "has_ai_metadata": False,
+            "suspicious_total": 0,
+            "findings": [],
+            "confidence": [],
+            "notes": ["unrecognized format; not scanned"],
+        }
+
     report = inspect_container(path)
     findings = list(report.findings)
     confidences = [classify_finding_confidence(f) for f in report.findings]

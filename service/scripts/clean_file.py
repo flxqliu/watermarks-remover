@@ -61,6 +61,19 @@ def main() -> int:
 
     kind = args.force_type if args.force_type != "auto" else classify(args.path)
 
+    # classify() reports "unknown" for bytes that match no supported format.
+    # Never mutate those in auto mode: a binary with valid UTF-8 runs would
+    # be decoded and written back mangled. --as text / --force-text are the
+    # explicit opt-ins and both route through the text pipeline below.
+    if kind == "unknown":
+        if args.force_type == "text" or args.force_text:
+            kind = "text"
+        else:
+            eprint(f"refusing to classify {args.path}: unrecognized format")
+            for line in ROUTER_ADVICE:
+                eprint(line)
+            return 2
+
     # In-place cleaning reads from a .bak copy whose suffix would make
     # markdown/HTML (detected by extension, not magic bytes) classify as
     # "unknown". Pin the format from the original path so --in-place and -o

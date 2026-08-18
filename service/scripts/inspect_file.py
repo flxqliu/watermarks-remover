@@ -52,6 +52,21 @@ def main() -> int:
     kind = args.force_type if args.force_type != "auto" else classify(args.path)
     file_label = str(args.path.resolve())
 
+    # "unknown" means the bytes match no supported format. Inspect does not
+    # mutate, so report it as-is; --as / --force-text override to text.
+    if kind == "unknown":
+        if args.force_type == "text" or args.force_text:
+            kind = "text"
+        else:
+            note = "unrecognized format; pass --as text|image|container or --force-text to override"
+            if args.json:
+                emit_json({"kind": "unknown", "path": file_label, "note": note})
+            else:
+                print(f"File: {file_label}")
+                print("Kind: unknown")
+                print(note)
+            return 0
+
     if kind == "text":
         text = read_text_input(
             str(args.path),
