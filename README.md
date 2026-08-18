@@ -780,6 +780,22 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 To register a project here, open a PR adding a short entry — project name, what it wraps or adds, and a link to its own repository. Keep entries brief and factual; do not claim compatibility with, or endorsement by, this project. Please avoid names that start with or closely resemble `watermarks-remover` — look-alike names make it hard to tell which project is which.
 
+## Pre-commit hook
+
+CI gating already exists (`audit_dir.py`'s SARIF export, see [Coverage matrix](#coverage-matrix) context) — the [pre-commit](https://pre-commit.com/) hooks below catch the same class of problem earlier, before a marked file is even committed. Both wrap the existing CLIs (`audit_dir.py` / `clean_file.py`) — no separate detection logic.
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/guillaumemeyer/watermarks-remover
+    rev: v0.5.0   # pin to a tag/commit
+    hooks:
+      - id: watermarks-remover-check   # fails the commit if marks are found
+      # - id: watermarks-remover-clean # opt-in: cleans staged files in place instead
+```
+
+`watermarks-remover-check` fails the commit and lists findings; `watermarks-remover-clean` is opt-in and rewrites staged files in place (exits non-zero so you review the diff and re-stage — the same convention as auto-fixing hooks like `ruff --fix`). Run either by hand with `python3 service/scripts/check_staged.py <files...>` / `clean_staged.py <files...>`.
+
 ## Tests
 
 ```bash
