@@ -51,9 +51,7 @@ def _make_docx(body_text: str) -> bytes:
         zf.writestr(
             "word/document.xml",
             '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            "<w:body><w:p><w:r><w:t>"
-            + body_text
-            + "</w:t></w:r></w:p></w:body></w:document>",
+            "<w:body><w:p><w:r><w:t>" + body_text + "</w:t></w:r></w:p></w:body></w:document>",
         )
     return buf.getvalue()
 
@@ -89,6 +87,7 @@ def test_legitimate_ampersand_entity_round_trips():
     # The ampersand survives as a well-formed reference, not a bare &.
     assert "Tom &amp; Jerry" in document
 
+
 def _make_odt(body: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -99,7 +98,7 @@ def _make_odt(body: str) -> bytes:
             'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
             'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
             "<office:body><office:text>"
-            "<text:p text:style-name=\"Standard\">" + body + "</text:p>"
+            '<text:p text:style-name="Standard">' + body + "</text:p>"
             "</office:text></office:body></office:document-content>",
         )
     return buf.getvalue()
@@ -107,7 +106,7 @@ def _make_odt(body: str) -> bytes:
 
 def test_odt_entity_encoded_carrier_scrubbed_and_markup_preserved():
     data = _make_odt("Hi&#x200B;<text:span>world</text:span>!")
-    cleaned, actions = clean_odt(data)
+    cleaned, _ = clean_odt(data)
     with zipfile.ZipFile(io.BytesIO(cleaned)) as zf:
         content = zf.read("content.xml").decode()
 
