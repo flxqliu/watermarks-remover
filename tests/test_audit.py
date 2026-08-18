@@ -180,6 +180,43 @@ def test_inspect_remote_html_cms_informational():
     assert not is_actionable(result)
 
 
+def test_parse_sitemap_rejects_dtd_and_entity_bomb():
+    """Regression: billion-laughs via internal DTD entities must be refused.
+
+    parse_sitemap rejects any document declaring a DTD or entities before
+    parsing (audit_website.py:75). A hostile sitemap of a few hundred bytes
+    would otherwise expand to gigabytes during ET.fromstring, OOM-ing the
+    audit host. See GHSA-pjg6-92pm-mmcf.
+    """
+    bomb = (
+        b'<?xml version="1.0"?>'
+        b"<!DOCTYPE sitemapindex ["
+        b' <!ENTITY a "lol">'
+        b' <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+        b' <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
+        b' <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">'
+        b' <!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;">'
+        b' <!ENTITY f "&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;">'
+        b' <!ENTITY g "&f;&f;&f;&f;&f;&f;&f;&f;&f;&f;">'
+        b"]>"
+        b"<sitemapindex><loc>&g;</loc></sitemapindex>"
+    )
+    assert b"<!DOCTYPE" in bomb  # sanity: this is the entity-bomb payload
+
+    with pytest.raises(ValueError, match="declares a DTD / entities"):
+        parse_sitemap(bomb)
+
+    # Same refusal for the gzip-compressed form (the guard runs on the
+    # decompressed bytes, after the size cap).
+    with pytest.raises(ValueError, match="declares a DTD / entities"):
+        parse_sitemap(gzip.compress(bomb))
+
+    # A bare DOCTYPE with no entities is also refused, so the rejection does
+    # not depend on recognizing a particular bomb shape.
+    with pytest.raises(ValueError, match="declares a DTD / entities"):
+        parse_sitemap(b"<!DOCTYPE sitemapindex><sitemapindex></sitemapindex>")
+
+
 def test_parse_sitemap_rejects_oversized_gzip(monkeypatch):
     monkeypatch.setattr(
         audit_website,
