@@ -14,10 +14,12 @@ Endpoints:
                          -> {"cleaned": <base64>, "report": {...}}
     POST /inspect/batch  -> {"files": [{"file": <base64>, "name": "x.png"}, ...]}
                          -> {"results": [{"name", "ok", "kind", "report", "suspicious"}, ...]}
+    POST /detect/batch   -> {"files": [{"file": <base64>, "name": "x.txt"}, ...]}
+                         -> {"results": [{"name", "ok", "kind", "detections", "report"}, ...]}
     POST /clean/batch    -> {"files": [{"file": <base64>, "name": "x.png", "options": {...}}, ...]}
                          -> {"results": [{"name", "ok", "kind", "cleaned", "report"}, ...]}
 
-Batch endpoints loop the same single-file pipeline as /inspect and /clean; a
+Batch endpoints loop the same single-file pipeline as /inspect, /detect, and /clean; a
 per-file failure (unknown format, oversized name, bad option) shows up as
 that entry's "ok": false with an "error" string and never aborts the rest of
 the batch. Capped at WATERMARKS_MAX_BATCH_FILES entries per request (default
@@ -346,6 +348,50 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
             },
         }
     },
+    "/detect/batch": {
+        "post": {
+            "summary": f"Run watermark detectors on up to {MAX_BATCH_FILES} files in one request",
+            "requestBody": _schema(
+                required=True,
+                content={
+                    "application/json": _schema(
+                        schema=_schema(
+                            type="object",
+                            required=["files"],
+                            properties={"files": _schema(type="array", items=_file_request())},
+                        )
+                    )
+                },
+            ),
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "results": _schema(
+                            type="array",
+                            items=_schema(
+                                type="object",
+                                properties={
+                                    "name": _schema(type="string"),
+                                    "ok": _schema(type="boolean"),
+                                    "kind": _schema(
+                                        type="string",
+                                        enum=["text", "image", "container", "av"],
+                                    ),
+                                    "detections": _schema(
+                                        type="array", items=_schema(type="object")
+                                    ),
+                                    "report": _schema(type="object"),
+                                    "error": _schema(type="string"),
+                                },
+                            ),
+                        ),
+                    },
+                )
+            },
+        }
+    },
     "/clean/batch": {
         "post": {
             "summary": f"Clean up to {MAX_BATCH_FILES} files in one request",
@@ -589,6 +635,49 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
     return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
 
 
+def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
+    kind = classify_bytes(data, Path(name).suffix)
+    with tempfile.TemporaryDirectory(prefix="wm-detect-") as tmp:
+        path = _tmp_path(Path(tmp), name or "input")
+        path.write_bytes(data)
+        if kind == "text":
+            if looks_binary(data):
+                raise ValueError(
+                    "refusing to detect bytes that look like a binary container as text"
+                )
+            raw_text = data.decode("utf-8", errors="surrogateescape")
+            detections: list[dict[str, Any]] = run_all_text_detectors(raw_text)
+            s_rep = score_text_stylometry(raw_text, path=name or "<text>")
+            detections.append({"detector": "stylometry", "available": True, **s_rep.to_dict()})
+            return {"ok": True, "kind": kind, "detections": detections}
+        elif kind == "image":
+            score = run_synthid_score(path)
+            if score is None:
+                score = {
+                    "detector": "synthid",
+                    "available": False,
+                    "error": (
+                        "no SynthID scorer configured (set "
+                        "WATERMARKS_SYNTHID_SCORER_URL or REVERSE_SYNTHID_DIR)"
+                    ),
+                }
+            else:
+                score.setdefault("detector", "synthid")
+            detections = [score]
+            return {"ok": True, "kind": kind, "detections": detections}
+        elif kind == "av":
+            return {"ok": True, "kind": kind, "detections": [], "report": inspect_av(path).to_dict()}
+        else:
+            detections = []
+            report = inspect_container(path).to_dict()
+            return {
+                "ok": True,
+                "kind": kind,
+                "detections": detections,
+                "report": report,
+            }
+
+
 def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str, Any]:
     kind = classify_bytes(data, Path(name).suffix)
     if kind == "unknown":
@@ -724,7 +813,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._respond(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
             return
-        if path not in ("/inspect", "/clean", "/detect", "/inspect/batch", "/clean/batch"):
+        if path not in (
+            "/inspect",
+            "/clean",
+            "/detect",
+            "/inspect/batch",
+            "/detect/batch",
+            "/clean/batch",
+        ):
             self._respond(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
         body = self._read_json()
@@ -739,6 +835,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/inspect/batch":
                 self._handle_inspect_batch(body)
+            elif path == "/detect/batch":
+                self._handle_detect_batch(body)
             elif path == "/clean/batch":
                 self._handle_clean_batch(body)
             else:
@@ -778,47 +876,22 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
     def _handle_detect(self, data: bytes, name: str) -> None:
-        kind = classify_bytes(data, Path(name).suffix)
-        with tempfile.TemporaryDirectory(prefix="wm-detect-") as tmp:
-            path = _tmp_path(Path(tmp), name or "input")
-            path.write_bytes(data)
-            if kind == "text":
-                if looks_binary(data):
-                    raise ValueError(
-                        "refusing to detect bytes that look like a binary container as text"
-                    )
-                raw_text = data.decode("utf-8", errors="surrogateescape")
-                detections: list[dict[str, Any]] = run_all_text_detectors(raw_text)
-                s_rep = score_text_stylometry(raw_text, path=name or "<text>")
-                detections.append({"detector": "stylometry", "available": True, **s_rep.to_dict()})
-            elif kind == "image":
-                score = run_synthid_score(path)
-                if score is None:
-                    score = {
-                        "detector": "synthid",
-                        "available": False,
-                        "error": (
-                            "no SynthID scorer configured (set "
-                            "WATERMARKS_SYNTHID_SCORER_URL or REVERSE_SYNTHID_DIR)"
-                        ),
-                    }
-                else:
-                    score.setdefault("detector", "synthid")
-                detections = [score]
-            else:
-                detections = []
-                report = inspect_container(path).to_dict()
-                self._respond(
-                    HTTPStatus.OK,
-                    {
-                        "ok": True,
-                        "kind": kind,
-                        "detections": detections,
-                        "report": report,
-                    },
-                )
-                return
-        self._respond(HTTPStatus.OK, {"ok": True, "kind": kind, "detections": detections})
+        self._respond(HTTPStatus.OK, _detect_payload(data, name))
+
+    def _handle_detect_batch(self, body: dict[str, Any]) -> None:
+        items = _batch_items(body)
+        results = []
+        for name, data, _options, error in items:
+            if error is not None:
+                results.append({"name": name, "ok": False, "error": error})
+                continue
+            try:
+                payload = _detect_payload(data, name)
+            except ValueError as e:
+                results.append({"name": name, "ok": False, "error": str(e)})
+                continue
+            results.append({"name": name, **payload})
+        self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
     def _handle_clean(self, data: bytes, name: str, body: dict[str, Any]) -> None:
         options = _parse_clean_options(body.get("options"))
