@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import image_meta  # noqa: E402
+import image_meta
 
 
 def _chunk(ctype: bytes, payload: bytes) -> bytes:
@@ -41,10 +41,9 @@ def _truncated_png() -> bytes:
 def test_strip_png_keeps_truncated_tail():
     data = _truncated_png()
     out, actions = image_meta.strip_png(data)
-    # The output preserves every input byte past the signature + parsed chunks:
-    # nothing is silently dropped.
-    assert len(out) >= len(data), (len(out), len(data))
-    assert data in out or out.endswith(data[len(data) - (len(out) - len(data)) :]) or out == data or data[8:] in out
+    # No chunk in this fixture is droppable, so every input byte must survive
+    # byte-for-byte: nothing is silently dropped.
+    assert out == data, (len(out), len(data))
     # And the run says the tail was kept — never "already clean".
     assert any("truncated" in a.lower() for a in actions), actions
 
@@ -74,5 +73,15 @@ def test_strip_isobmff_intact_unchanged():
     ftyp = struct.pack(">I", 16) + b"ftypavif" + b"\x00\x00\x00\x00"
     full = struct.pack(">I", 12) + b"mdat" + b"\x00" * 4
     data = ftyp + full
+    _, actions = image_meta.strip_isobmff(data, fmt="avif")
+    assert not any("truncated" in a.lower() for a in actions)
+
+
+def test_strip_isobmff_trailing_junk_kept_without_truncation():
+    # A few trailing bytes after the last box are kept verbatim but are not
+    # reported as truncation -- the walk simply ran out of box headers.
+    ftyp = struct.pack(">I", 16) + b"ftypavif" + b"\x00\x00\x00\x00"
+    data = ftyp + b"\x01\x02\x03"
     out, actions = image_meta.strip_isobmff(data, fmt="avif")
+    assert out == data
     assert not any("truncated" in a.lower() for a in actions)
