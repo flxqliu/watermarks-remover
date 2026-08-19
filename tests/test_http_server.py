@@ -368,3 +368,35 @@ def test_batch_over_limit_rejected(conn, monkeypatch):
     )
     assert status == 400
     assert "batch limit" in body["error"]
+
+
+def test_clean_jpeg_preserves_format_extension(conn):
+    # Minimal valid JPEG bytes (SOI + APP0 + EOI)
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(jpeg_bytes), "name": "photo.jpg"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["kind"] == "image"
+    assert body["report"]["format"] == "jpeg"
+    cleaned = base64.b64decode(body["cleaned"])
+    assert cleaned[:2] == b"\xff\xd8"
+
+
+def test_clean_extensionless_svg_container_post_inspection(conn):
+    svg_bytes = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><metadata>c2pa test</metadata><rect/></svg>'
+    )
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(svg_bytes)},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["kind"] == "container"
+    assert body["report"]["format"] == "svg"
+    assert body["report"]["still_has_c2pa"] is False

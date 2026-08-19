@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from common import classify_finding_confidence
+from common import classify_finding_confidence, safe_write_bytes
 from image_meta import (
     AI_META_HINTS,
     XMP_UUID,  # noqa: F401 -- re-exported for callers that want the raw constant
@@ -372,8 +372,7 @@ def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict
     else:
         raise ValueError(f"unsupported audio/video format for cleaning: {fmt}")
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(cleaned)
+    safe_write_bytes(dest, cleaned)
 
     after = inspect_av(dest)
     return {
