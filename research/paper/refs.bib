@@ -1,0 +1,388 @@
+% refs.bib -- verified bibliography for the arXiv v1 paper (gap C2).
+% Source: research/03-related-work.md. Every entry was checked against
+% the arXiv API on 2026-08-18 (see the 03 header); all entries in
+% sections A-E below resolve to the exact paper.
+%
+% % re-verify at submission: every ID, venue label, and URL below must be
+% re-checked before upload (03 header; 05-arxiv-readiness.md checklist F).
+% Full author lists were not re-verified -- expand "and others" then.
+%
+% Conventions:
+%   - ID = first-author-lastname + arXiv year (+ short tag).
+%   - arXiv items are @misc with eprint/archivePrefix (and primaryClass).
+%   - Venue labels are from the 03 table and kept in the note field.
+%
+% Four candidates were dropped from 03 on 2026-08-18 (unverifiable) and
+% are intentionally NOT here; re-verify before ever re-adding any of them
+% (see 03 header, "Four candidate citations were dropped...").
+
+% ---------------------------------------------------------------------
+% A. Watermarking methods (the attack surface we test)
+% ---------------------------------------------------------------------
+
+@misc{kirchenbauer2023kwg,
+  title         = {A Watermark for Large Language Models},
+  author        = {Kirchenbauer, John and others},
+  year          = {2023},
+  eprint        = {2301.10226},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ICML 2023},
+}
+
+@misc{christ2023undetectable,
+  title         = {Undetectable Watermarks for Language Models},
+  author        = {Christ, Miranda and others},
+  year          = {2023},
+  eprint        = {2306.09194},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {COLT 2024},
+}
+
+@misc{kuditipudi2023robust,
+  title         = {Robust Distortion-free Watermarks for Language Models},
+  author        = {Kuditipudi, Rohith and others},
+  year          = {2023},
+  eprint        = {2307.15593},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {TMLR},
+}
+
+@misc{liu2023sir,
+  title         = {A Semantic Invariant Robust Watermark for Large
+                  Language Models},
+  author        = {Liu, Aiwei and others},
+  year          = {2023},
+  eprint        = {2310.06356},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ICLR 2024},
+}
+
+@misc{liu2023upv,
+  title         = {An Unforgeable Publicly Verifiable Watermark for
+                  Large Language Models},
+  author        = {Liu, Aiwei and others},
+  year          = {2023},
+  eprint        = {2307.16230},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ICLR 2024},
+}
+
+@misc{zhao2024permute,
+  title         = {Permute-and-Flip: An Optimally Stable and
+                  Watermarkable Decoder},
+  author        = {Zhao, Xuandong and others},
+  year          = {2024},
+  eprint        = {2402.05864},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{hu2023unbiased,
+  title         = {Unbiased Watermark for Large Language Models},
+  author        = {Hu, Zhengmian and others},
+  year          = {2023},
+  eprint        = {2310.10669},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{wu2023dipmark,
+  title         = {A Resilient and Accessible Distribution-Preserving
+                  Watermark for Large Language Models},
+  author        = {Wu, Yihan and others},
+  year          = {2023},
+  eprint        = {2310.07710},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{huo2024tswatermark,
+  title         = {Token-Specific Watermarking with Enhanced Detectability
+                  and Semantic Coherence for Large Language Models},
+  author        = {Huo, Mingjia and others},
+  year          = {2024},
+  eprint        = {2402.18059},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ICML 2024},
+}
+
+@misc{liu2024adaptive,
+  title         = {Adaptive Text Watermark for Large Language Models},
+  author        = {Liu, Yepeng and others},
+  year          = {2024},
+  eprint        = {2401.13927},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{hou2023semstamp,
+  title         = {SemStamp: A Semantic Watermark with Paraphrastic
+                  Robustness for Text Generation},
+  author        = {Hou, Abe Bohan and others},
+  year          = {2023},
+  eprint        = {2310.03991},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{hou2024ksemstamp,
+  title         = {k-SemStamp: A Clustering-Based Semantic Watermark
+                  for Generated Text},
+  author        = {Hou, Abe Bohan and others},
+  year          = {2024},
+  eprint        = {2402.11399},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{gu2025invisible,
+  title         = {Invisible Entropy: Safe and Efficient Low-Entropy
+                  LLM Watermarking},
+  author        = {Gu, Tianle and others},
+  year          = {2025},
+  eprint        = {2505.14112},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{wang2025morphmark,
+  title         = {MorphMark: Flexible Adaptive Watermarking for
+                  Large Language Models},
+  author        = {Wang, Zongqi and others},
+  year          = {2025},
+  eprint        = {2505.11541},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {no venue label in 03 -- re-verify},
+}
+
+@misc{yang2023blackbox,
+  title         = {Watermarking Text Generated by Black-Box Language
+                  Models},
+  author        = {Yang, Xi and others},
+  year          = {2023},
+  eprint        = {2305.08883},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {NAACL 2024},
+}
+
+% ---------------------------------------------------------------------
+% B. Robustness, attacks, and limits (our direct neighbors)
+% ---------------------------------------------------------------------
+
+@misc{kirchenbauer2023reliability,
+  title         = {On the Reliability of Watermarks for Large Language
+                  Models},
+  author        = {Kirchenbauer, John and others},
+  year          = {2023},
+  eprint        = {2306.04634},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {NeurIPS 2023; note title is "Watermarks", not
+                  "Watermarking" (03 header)},
+}
+
+@misc{he2024xsir,
+  title         = {Can Watermarks Survive Translation? On the
+                  Cross-lingual Consistency of Text Watermark for Large
+                  Language Models},
+  author        = {He, Zhiwei and others},
+  year          = {2024},
+  eprint        = {2402.14007},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ACL 2024; cross-lingual attack; our A4 baseline
+                  anchor},
+}
+
+@misc{zhang2023sand,
+  title         = {Watermarks in the Sand: Impossibility of Strong
+                  Watermarking for Generative Models},
+  author        = {Zhang, Hanlin and others},
+  year          = {2023},
+  eprint        = {2311.04378},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {ICML 2024; Random Walk attack; impossibility theory},
+}
+
+@misc{jovanovic2024stealing,
+  title         = {Watermark Stealing in Large Language Models},
+  author        = {Jovanovi\'{c}, Nikola and others},
+  year          = {2024},
+  eprint        = {2402.19361},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CR},
+  note          = {key-extraction threat; no venue label in 03 --
+                  re-verify},
+}
+
+@misc{pan2024waterseeker,
+  title         = {WaterSeeker: Efficient Detection of Watermarked
+                  Segments in Large Documents},
+  author        = {Pan, Leyi and others},
+  year          = {2024},
+  eprint        = {2409.05112},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {NAACL 2025 Findings; detector side},
+}
+
+@misc{lu2024ewd,
+  title         = {An Entropy-based Text Watermarking Detection
+                  Method},
+  author        = {Lu, Yijian and others},
+  year          = {2024},
+  eprint        = {2403.13485},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ACL 2024; detector side},
+}
+
+@misc{liu2024crafted,
+  title         = {Can Watermarked LLMs be Identified by Users via
+                  Crafted Prompts?},
+  author        = {Liu, Aiwei and others},
+  year          = {2024},
+  eprint        = {2410.03168},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ICLR 2025 Spotlight},
+}
+
+@misc{pan2025distillation,
+  title         = {Can LLM Watermarks Robustly Prevent Unauthorized
+                  Knowledge Distillation?},
+  author        = {Pan, Leyi and others},
+  year          = {2025},
+  eprint        = {2502.11598},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ACL 2025},
+}
+
+% ---------------------------------------------------------------------
+% C. Closest recent neighbors (2025-2026 measurement / forensics)
+% ---------------------------------------------------------------------
+
+@misc{han2025synthid,
+  title         = {Robustness Assessment and Enhancement of Text
+                  Watermarking for Google's SynthID},
+  author        = {Han, Xia and others},
+  year          = {2025},
+  eprint        = {2508.20228},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {closest method-specific robustness work; must cite
+                  and differentiate in Sections 2/5},
+}
+
+@misc{omidi2026synthid,
+  title         = {On Google's SynthID-Text LLM Watermarking System:
+                  Theoretical Analysis and Empirical Validation},
+  author        = {Omidi, Romina and others},
+  year          = {2026},
+  eprint        = {2603.03410},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {theoretical analysis of SynthID-Text},
+}
+
+@misc{tamim2026forensic,
+  title         = {AI Watermark Evidence Fails Forensic Readiness: An
+                  Empirical Evaluation},
+  author        = {Tamim, Saifur Rahman and others},
+  year          = {2026},
+  eprint        = {2607.16010},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {directly supports our policy finding (Section 7)},
+}
+
+@misc{harelcanada2025sandcastles,
+  title         = {Sandcastles in the Storm: Revisiting the
+                  (Im)possibility of Strong Watermarking},
+  author        = {Harel-Canada, Fabrice Y and others},
+  year          = {2025},
+  eprint        = {2505.06827},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {impossibility revisited},
+}
+
+% ---------------------------------------------------------------------
+% D. Tools & surveys
+% ---------------------------------------------------------------------
+
+@misc{pan2024markllm,
+  title         = {MarkLLM: An Open-Source Toolkit for LLM Watermarking},
+  author        = {Pan, Leyi and others},
+  year          = {2024},
+  eprint        = {2405.10051},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {EMNLP 2024 Demo; our harness; THU-BPM},
+}
+
+@misc{liu2023survey,
+  title         = {A Survey of Text Watermarking in the Era of Large
+                  Language Models},
+  author        = {Liu, Aiwei and others},
+  year          = {2023},
+  eprint        = {2312.07913},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  note          = {ACM Computing Surveys 2025; overview + taxonomy},
+}
+
+% ---------------------------------------------------------------------
+% E. Non-arXiv sources (correct IDs; cite directly)
+% ---------------------------------------------------------------------
+
+@article{deepmind2024synthidtext,
+  title     = {SynthID-Text: Text Watermarking for LLMs with
+               Tournament-based Sampling},
+  author    = {{Google DeepMind}},
+  journal   = {Nature},
+  year      = {2024},
+  volume    = {638},
+  pages     = {625--632},
+  doi       = {10.1038/s41586-024-08025-4},
+  note      = {cite the Nature DOI as primary; the arXiv tech-report id
+               was not resolvable in our checks (03 header)},
+}
+
+@misc{c2pa2024spec,
+  title        = {C2PA Specification},
+  author       = {{Coalition for Content Provenance and Authenticity}},
+  year         = {2024},
+  howpublished = {Specification 2.1},
+  url          = {https://c2pa.org/specifications/specifications/2.1/specs/C2PA_Specification.html},
+  note         = {verify spec version and year at submission},
+}
+
+@misc{euaiact2024,
+  title        = {Regulation (EU) 2024/1689 of the European Parliament
+                  and of the Council of 13 June 2024 laying down
+                  harmonised rules on artificial intelligence
+                  (Artificial Intelligence Act)},
+  author       = {{European Parliament and Council of the European Union}},
+  year         = {2024},
+  url          = {https://eur-lex.europa.eu/eli/reg/2024/1689/oj},
+  note         = {Art.~50 (transparency obligations); in force for GPAI
+                  since 2026-08-02; verify exact recitals at submission},
+}

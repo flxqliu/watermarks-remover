@@ -2,7 +2,7 @@
 	smoke-ctrlregen bootstrap-ctrlregen docker-ctrlregen-build docker-ctrlregen-help \
 	smoke-markllm bootstrap-markllm docker-markllm-build docker-markllm-help \
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
-	bench-synthid-text \
+	bench-synthid-text research-check \
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
 	install-skill install-cursor-text-skill clean
 
@@ -20,6 +20,12 @@ format:
 
 lint-fix:
 	$(PYTHON) -m ruff check --fix service tests
+
+# Research/paper harness checks (not part of CI: research/ is excluded from the
+# product CI jobs by design; run this before the v1 run and before submission).
+research-check:
+	$(PYTHON) -m ruff check research
+	$(PYTHON) -m pytest research/tests -q
 
 smoke:
 	-python3 $(SCRIPTS)/inspect_text.py tests/fixtures/sample_watermarked.txt

@@ -1,9 +1,10 @@
-# SynthID-text removal benchmark
+# MarkLLM text-watermark removal benchmark
 
 bench_synthid_text.py measures how well the Layer B rewrite
-(rewrite_text.py) removes SynthID-text-class watermarks, and at what
-cost. It generates a controlled corpus with the MarkLLM SynthID scheme, runs
-removal variants, and emits a shareable report.
+(rewrite_text.py) removes MarkLLM text watermarks, and at what
+cost. It generates a controlled corpus with a chosen MarkLLM scheme
+(`--scheme`, default `synthid`), runs removal variants, and emits a
+shareable report.
 
 ## What it measures
 
@@ -48,6 +49,17 @@ Prerequisites (all external, matching the repo's optional-harness model):
 
 API keys are read from the environment only (WATERMARKS_REWRITE_API_KEY),
 never argv. Non-loopback rewrite endpoints require --rewrite-allow-remote.
+
+## Schemes beyond SynthID
+
+The benchmark accepts any scheme in the detector's map with `--scheme`
+(`kgw`, `synthid`/`synthid-text`, `exp`, `unigram`, `sir`), and
+`--config` overrides the scheme's config JSON (default:
+`<MarkLLM checkout>/config/<ALG>.json`). The same `--scheme`+`--config`
+pair must be used for generation and detection (same-config guarantee).
+The v1 study's KGW strength configs live in research/configs/
+(KGW-d1/d2/d4.json: gamma=.25/.5/.5, delta=1/2/4). The research harness
+(run_experiments.py --plan) drives the full locked matrix.
 
 No vendor tier: Google retired SynthID text watermarking on its API in
 Aug 2026 (DETECT_TEXT_WATERMARK is rejected on current models), so detection

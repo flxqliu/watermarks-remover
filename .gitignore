@@ -29,6 +29,11 @@
 !/requirements-dev.txt
 !/ruff.toml
 !/SECURITY.md
+!/research/
+!/research/**
+
+# Generated run data (JSONL per condition) is released via Zenodo, not git.
+/research/results/
 
 # Exceptions even inside allowed trees
 .env

@@ -29,3 +29,10 @@ ignore = [
   "RUF001",
   "RUF003",
 ]
+# research/tests use the same sys.path-hack pattern as tests/ (not CI-covered
+# by the product jobs; linted via `make research-check`).
+"research/tests/**" = [
+  "E402",
+  "RUF001",
+  "RUF003",
+]

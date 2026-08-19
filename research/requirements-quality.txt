@@ -1,0 +1,34 @@
+# research/requirements-quality.txt
+# =================================
+#
+# SEPARATE quality-metric environment for research/scripts/evaluate_quality.py
+# (research/01-experiment-protocol.md §5.3, gap 05-B2).
+#
+# This env MUST stay isolated from the MarkLLM environment (the service/
+# MarkLLM harness): it pins a different torch/transformers/tokenizers stack
+# and adds the metric libraries (sentence-transformers, bert-score,
+# rouge-score). Installing this file into the MarkLLM env would break that
+# env's pinned versions -- create a dedicated venv instead:
+#
+#   python3 -m venv .venv-quality
+#   .venv-quality/bin/pip install -r research/requirements-quality.txt
+#
+# PPL is scored with gpt2-large and NEVER with the generator (opt-1.3b /
+# Qwen2.5), so the MarkLLM stack is not needed here (protocol §5.3, "never
+# score with the generator"). Record `pip freeze` of this env in the run
+# manifest (protocol §7).
+#
+# --- pinned core stack (exact versions, do not float) ---
+torch==2.13.0.*
+transformers==5.15.0
+tokenizers==0.22.2
+
+# --- general numeric / hub dependencies ---
+numpy
+scipy
+huggingface_hub
+
+# --- metric libraries: pin exact versions at setup time ---
+sentence-transformers
+bert-score
+rouge-score

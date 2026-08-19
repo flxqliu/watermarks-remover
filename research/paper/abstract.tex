@@ -1,0 +1,25 @@
+% abstract.tex -- abstract draft for the arXiv v1 paper.
+% Source: research/02-paper-outline.md §2 (v0.2, 2026-08-18), copied
+% verbatim (LaTeX-escaped). ~150 words.
+%
+% TODO (W2): recheck every number against the final run before
+% submission -- the 3,500/3,500 cell counts and the metric list must
+% match the released results (research/01-experiment-protocol.md §2;
+% 05-arxiv-readiness.md checklist F).
+
+Text watermarking is the primary mechanism proposed for EU AI Act
+Art.~50 transparency obligations on machine-generated content. We
+measure its robustness against realistic user-side editing. Using
+same-config detection over 3,500 watermarked and 3,500 unwatermarked
+generations (KGW, SynthID-Text, EXP, Unigram, and SIR schemes, in
+English and German/French/Spanish), we evaluate a layered removal
+pipeline that combines formatting-layer cleanup (invisible Unicode,
+bidi) with statistical rewriting driven by detection feedback, and we
+report ROC-based metrics (AUROC, TPR@1\%FPR) and quality metrics
+(perplexity, BERTScore, ROUGE-L) at the point of detection collapse. We
+find that quality-preserving paraphrase and translation round-trip
+collapse KGW-class detection to near chance, that SynthID-Text resists
+token substitution but not paraphrase, that layering dominates single
+attacks at equal quality cost, and that multilingual texts are
+systematically more fragile. We discuss implications for Art.~50
+compliance and release our corpus, configs, and harness.

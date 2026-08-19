@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Benchmark for SynthID-text watermark removal (Layer B rewrite).
+"""Benchmark for MarkLLM text-watermark removal (Layer B rewrite).
 
 Orchestrates the repo's existing machinery into a reproducible, shareable
 benchmark:
 
-  1. Generate a watermarked + unwatermarked corpus with the MarkLLM SynthID
-     scheme (same-config generation and detection).
+  1. Generate a watermarked + unwatermarked corpus with a chosen MarkLLM
+     scheme (same-config generation and detection; --scheme/--config).
   2. Run removal variants (Layer A only, Layer B rewrites at chosen
      strength x max-attempt counts; the rewrite loop stops early when an
      attempt passes evaluation) and control rows (no removal, optional
@@ -49,6 +49,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from common import eprint  # noqa: E402
+from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
 
@@ -60,7 +61,10 @@ except IndexError:
     # callers pass --corpus explicitly.
     DEFAULT_CORPUS = _RESOLVED_SCRIPT.parent / "benchmarks" / "corpus"
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
-SCHEME = "synthid"
+# Default scheme for the benchmark. Overridable with --scheme (any key of
+# detect_text_watermark.SCHEMES); --config overrides the scheme's config JSON
+# (research/configs/ holds the v1 study's KGW strength configs).
+DEFAULT_SCHEME = "synthid"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # MarkLLM generation/detection can take minutes on CPU (model load per call).
@@ -193,6 +197,9 @@ def run_watermark(
     out_dir: Path,
     model: str,
     timeout: float,
+    *,
+    scheme: str,
+    config: str | None,
 ) -> dict[str, Any]:
     """Generate one watermarked (+ unwatermarked) sample via MarkLLM."""
     wm_path = out_dir / f"wm_seed{seed}.txt"
@@ -203,7 +210,7 @@ def run_watermark(
         "watermark",
         str(prompt_path),
         "--scheme",
-        SCHEME,
+        scheme,
         "--seed",
         str(seed),
         "--max-new-tokens",
@@ -218,6 +225,8 @@ def run_watermark(
         str(plain_path),
         "--json",
     ]
+    if config:
+        cmd += ["--config", config]
     try:
         proc = _run_cmd(cmd, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -256,6 +265,9 @@ def run_detect(
     text: str,
     model: str,
     timeout: float,
+    *,
+    scheme: str,
+    config: str | None,
 ) -> dict[str, Any]:
     """Same-config MarkLLM detection of *text*; fail-soft payload."""
     import tempfile
@@ -270,13 +282,15 @@ def run_detect(
             "detect",
             tmp,
             "--scheme",
-            SCHEME,
+            scheme,
             "--model",
             model,
             "--upstream-dir",
             str(upstream),
             "--json",
         ]
+        if config:
+            cmd += ["--config", config]
         try:
             proc = _run_cmd(cmd, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -316,6 +330,7 @@ def run_rewrite(
     api_key: str | None,
     markllm_model: str,
     markllm_timeout: float,
+    markllm_scheme: str,
 ) -> tuple[str, dict[str, Any]]:
     """Run the Layer B rewrite on *text* via rewrite_text.py (real product path).
 
@@ -356,7 +371,7 @@ def run_rewrite(
         "--timeout",
         str(timeout),
         "--markllm-scheme",
-        SCHEME,
+        markllm_scheme,
         "--markllm-dir",
         str(upstream),
         "--markllm-model",
@@ -467,6 +482,9 @@ class MarkLLMWorker:
         upstream: Path,
         model: str,
         timeout: float,
+        *,
+        scheme: str,
+        config: str | None,
     ) -> None:
         self._timeout = timeout
         cmd = [
@@ -474,7 +492,7 @@ class MarkLLMWorker:
             str(script),
             "serve",
             "--scheme",
-            SCHEME,
+            scheme,
             "--model",
             model,
             "--upstream-dir",
@@ -482,6 +500,8 @@ class MarkLLMWorker:
             "--port",
             "0",
         ]
+        if config:
+            cmd += ["--config", config]
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -602,6 +622,8 @@ class Benchmark:
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
+        self.scheme = args.scheme
+        self.config = args.config
         self.worker = None
         if not args.no_worker:
             try:
@@ -611,6 +633,8 @@ class Benchmark:
                     self.upstream,
                     args.markllm_model,
                     args.markllm_timeout,
+                    scheme=self.scheme,
+                    config=self.config,
                 )
                 eprint(f"markllm worker: resident on {self.worker.info.get('device', '?')}")
             except Exception as e:
@@ -645,6 +669,8 @@ class Benchmark:
             out_dir,
             self.args.markllm_model,
             WATERMARK_TIMEOUT,
+            scheme=self.scheme,
+            config=self.config,
         )
 
     def detect(self, text: str) -> dict[str, Any]:
@@ -655,7 +681,14 @@ class Benchmark:
                 eprint(f"markllm worker failed ({e}); falling back to one-shot")
                 self._drop_worker()
         return run_detect(
-            self.python, self.script, self.upstream, text, self.args.markllm_model, DETECT_TIMEOUT
+            self.python,
+            self.script,
+            self.upstream,
+            text,
+            self.args.markllm_model,
+            DETECT_TIMEOUT,
+            scheme=self.scheme,
+            config=self.config,
         )
 
     def rewrite(
@@ -679,6 +712,7 @@ class Benchmark:
             api_key=a.rewrite_api_key,
             markllm_model=a.markllm_model,
             markllm_timeout=a.markllm_timeout,
+            markllm_scheme=self.scheme,
         )
 
     # -- phases ------------------------------------------------------------
@@ -1039,7 +1073,7 @@ def render_markdown(
     L.append("")
     L.append(
         "Watermarked and unwatermarked samples are generated with the MarkLLM "
-        f"{SCHEME} scheme (same config for generation and detection). "
+        f"{config['scheme']} scheme (same config for generation and detection). "
         "Each sample must pass a sanity gate (watermarked detected, non-empty) before it "
         "counts. Rows: control (no removal), layer-a (Unicode scrub only), "
         "rewrite-<strength>:<candidates> (Layer B rewrite), optional restamp-* "
@@ -1116,6 +1150,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--corpus", type=Path, default=DEFAULT_CORPUS, help="Dir of .txt seeds or a single file"
     )
     p.add_argument("--docs", type=int, default=3, help="Max seed documents to use (default: 3)")
+    p.add_argument(
+        "--scheme",
+        default=DEFAULT_SCHEME,
+        choices=sorted(SCHEMES),
+        help="MarkLLM watermark scheme (default: synthid); any key of the detector's scheme map",
+    )
+    p.add_argument(
+        "--config",
+        default=None,
+        help="Algorithm config JSON (default: <MarkLLM checkout>/config/<ALG>.json). "
+        "Use the research/configs/ KGW strength JSONs for the v1 study",
+    )
     p.add_argument("--seeds", type=int, default=1, help="Watermark seeds per doc (default: 1)")
     p.add_argument("--seed-base", type=int, default=1, help="First seed value (default: 1)")
     p.add_argument(
@@ -1223,6 +1269,8 @@ def main() -> int:
         "markllm_commit": _markllm_commit(upstream),
         "markllm_dir": str(upstream),
         "markllm_model": args.markllm_model,
+        "scheme": args.scheme,
+        "config": str(args.config) if args.config else None,
         "variants": [f"{s}:{c}" for s, c in bench.variants],
         "corpus": str(args.corpus),
         "docs": args.docs,
@@ -1242,6 +1290,8 @@ def main() -> int:
             [
                 "python3 service/scripts/bench_synthid_text.py",
                 f"--markllm-dir {args.markllm_dir}",
+                f"--scheme {args.scheme}",
+                *([f"--config {args.config}"] if args.config else []),
                 f"--corpus {args.corpus}",
                 f"--docs {args.docs} --seeds {args.seeds} --seed-base {args.seed_base}",
                 f"--max-new-tokens {args.max_new_tokens}",

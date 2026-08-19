@@ -599,12 +599,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json-stats", action="store_true", help="Stats JSON on stderr")
     p.add_argument(
         "--markllm-scheme",
-        choices=("kgw", "synthid", "synthid-text"),
+        # Keep in sync with detect_text_watermark.SCHEMES: the v1 study drives
+        # the adaptive rewrite loop with exp/unigram/sir too (research/01 §4.1).
+        choices=("kgw", "synthid", "synthid-text", "exp", "unigram", "sir"),
         default=None,
         help="Run MarkLLM before/after detection around the rewrite AND drive "
         "the iterative rewrite loop with it (the evaluator, when configured; "
         "otherwise lexical divergence selects the best variant). "
-        "Scheme = kgw or synthid.",
+        "Scheme = any key of detect_text_watermark.SCHEMES.",
     )
     p.add_argument(
         "--markllm-dir",
