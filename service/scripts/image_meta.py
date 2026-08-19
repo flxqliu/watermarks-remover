@@ -672,7 +672,11 @@ def strip_bmp(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, l
     trailing = data[end:]
     hits = _contains_any(trailing, AI_META_HINTS + C2PA_MARKERS)
     if not strip_all_metadata and not hits:
-        return data, ["BMP trailing bytes kept (keep-non-ai-metadata)"]
+        # Nothing removed and nothing marked found: the caller asked to keep
+        # unflagged trailing bytes and we did. Reporting that as an action
+        # would mark an untouched file as changed (#173). Trailing bytes that
+        # DO carry markers fall through below and are still dropped.
+        return data, []
     out = bytearray(data[:end])
     out[2:6] = struct.pack("<I", end)
     reason = f" ({', '.join(hits[:4])})" if hits else ""

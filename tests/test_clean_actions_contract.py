@@ -20,7 +20,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import clean_staged
 from container_meta import clean_html, clean_markdown, clean_svg
-from image_meta import strip_jpeg, strip_png
+from image_meta import strip_bmp, strip_jpeg, strip_png
 
 
 def _png_chunk(ctype: bytes, payload: bytes) -> bytes:
@@ -37,6 +37,13 @@ def _minimal_png(*extra: tuple[bytes, bytes]) -> bytes:
         + _png_chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
         + _png_chunk(b"IEND", b"")
     )
+
+
+def _minimal_bmp(*, trailing: bytes = b"") -> bytes:
+    pixel = b"\x00\x00\xff\x00"
+    dib = struct.pack("<IiiHHIIiiII", 40, 1, 1, 1, 24, 0, len(pixel), 2835, 2835, 0, 0)
+    header = b"BM" + struct.pack("<IHHI", 14 + len(dib) + len(pixel), 0, 0, 14 + len(dib))
+    return header + dib + pixel + trailing
 
 
 def _minimal_jpeg(*, comment: bytes | None = None) -> bytes:
@@ -82,6 +89,27 @@ def test_clean_svg_reports_no_actions():
     cleaned, actions = clean_svg(data)
     assert actions == []
     assert cleaned == data
+
+
+def test_bmp_keeping_unflagged_trailing_bytes_is_not_an_action():
+    """--keep-non-ai-metadata honoured on unmarked trailing bytes is a no-op.
+
+    Nothing was removed and nothing marked was found, so the file is untouched.
+    Trailing bytes carrying markers are still dropped even under this flag,
+    which is covered by test_bmp_trailing_metadata_detected_and_stripped.
+    """
+    data = _minimal_bmp(trailing=b"trailing bytes without markers")
+    kept, actions = strip_bmp(data, strip_all_metadata=False)
+    assert kept == data
+    assert actions == []
+
+
+def test_bmp_marked_trailing_bytes_are_dropped_even_when_keeping(tmp_path):
+    """The keep flag must never suppress a real mark."""
+    data = _minimal_bmp(trailing=b"<x:xmpmeta>OpenAI</x:xmpmeta>")
+    cleaned, actions = strip_bmp(data, strip_all_metadata=False)
+    assert cleaned != data
+    assert any("drop" in a for a in actions)
 
 
 # --- a real removal still reports it ---------------------------------------

@@ -238,7 +238,7 @@ def test_bmp_keep_non_ai_metadata():
     data = _minimal_bmp(trailing=xmp)
     kept, actions = strip_bmp(data, strip_all_metadata=False)
     assert kept == data
-    assert any("keep" in a.lower() for a in actions)
+    assert actions == []  # nothing removed -> no actions (#173)
 
 
 def test_bmp_roundtrip(tmp_path: Path):
