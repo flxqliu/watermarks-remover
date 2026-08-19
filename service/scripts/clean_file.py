@@ -183,6 +183,9 @@ def main() -> int:
     else:
         eprint(f"wrote {result['output']} format={result['format']}")
         print_actions(result["actions"])
+        note = result.get("meta", {}).get("note")
+        if note:
+            eprint(f"  ! {note}")
         if residual:
             eprint("warning: residual C2PA/AI signals may remain")
             for f in result.get("post_findings") or []:

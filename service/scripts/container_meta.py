@@ -1783,7 +1783,7 @@ def inspect_pdf(path: Path, data: bytes) -> tuple[bool, bool, list[str], dict]:
     return has_c2pa, has_ai or has_c2pa, findings, {"tools": tools}
 
 
-def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
+def _pdf_structural_rewrite(dest: Path, actions: list[str], warnings: list[str]) -> bool:
     """Rebuild a PDF so unreferenced objects are dropped.
 
     exiftool's PDF edits are incremental, so freed metadata objects survive in
@@ -1792,7 +1792,7 @@ def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
     """
     qpdf = which("qpdf")
     if not qpdf:
-        actions.append(
+        warnings.append(
             "warning: exiftool PDF edits are incremental — the original metadata "
             "bytes remain recoverable; install qpdf for a structural rewrite"
         )
@@ -1801,7 +1801,17 @@ def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
     tmp = dest.with_name(dest.name + ".qpdf-tmp")
     try:
         r = subprocess.run(
-            [qpdf, "--linearize", "--", safe_arg(str(dest)), safe_arg(str(tmp))],
+            [
+                qpdf,
+                "--linearize",
+                # Without this qpdf regenerates the second half of the PDF /ID on
+                # every write, so cleaning the same file twice never produces
+                # the same bytes and the clean can never converge.
+                "--deterministic-id",
+                "--",
+                safe_arg(str(dest)),
+                safe_arg(str(tmp)),
+            ],
             capture_output=True,
             text=True,
             timeout=120,
@@ -1810,7 +1820,7 @@ def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
         )
     except Exception as e:
         tmp.unlink(missing_ok=True)
-        actions.append(f"qpdf rewrite failed: {e}; metadata bytes may remain recoverable")
+        warnings.append(f"qpdf rewrite failed: {e}; metadata bytes may remain recoverable")
         return False
 
     # qpdf exit codes: 0 = clean, 3 = succeeded with warnings (output written).
@@ -1820,15 +1830,40 @@ def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
         return True
 
     tmp.unlink(missing_ok=True)
-    actions.append(
+    warnings.append(
         f"qpdf rewrite skipped (rc={r.returncode}); metadata bytes may remain recoverable"
     )
     return False
 
 
+def _pdf_result(
+    data: bytes,
+    dest: Path,
+    actions: list[str],
+    warnings: list[str],
+    meta: dict,
+) -> tuple[list[str], dict]:
+    """Drop the operation records when the pipeline changed nothing.
+
+    exiftool and qpdf run whether or not there is anything to strip, and each
+    records that it ran. On a PDF with no metadata that leaves the bytes
+    untouched, so a caller reading `actions` to mean "this file changed" saw
+    every PDF as modified (#173). The operations still happened; they are just
+    not changes.
+
+    *warnings* always survive. They say the clean was incomplete — that
+    recoverable metadata bytes may remain — which is exactly the thing that
+    must never be silenced by a byte comparison.
+    """
+    if dest.is_file() and dest.read_bytes() == data:
+        return warnings, meta
+    return actions + warnings, meta
+
+
 def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
     """Best-effort PDF clean. Prefers exiftool; falls back to XMP strip warning."""
     actions: list[str] = []
+    warnings: list[str] = []
     data = path.read_bytes()
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1851,19 +1886,21 @@ def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
             )
             actions.append(f"exiftool -all= (rc={r.returncode})")
         except Exception as e:
-            actions.append(f"exiftool failed: {e}")
+            warnings.append(f"exiftool failed: {e}")
         # exiftool writes PDFs *incrementally*: it appends a
         # %BeginExifToolUpdate block that frees the Info object and drops
         # /Info from the trailer, but the original metadata bytes stay in the
         # file verbatim and are trivially recoverable (exiftool itself can
         # revert them with -PDF-update:all=). A structural rewrite is what
         # actually drops the now-unreferenced objects.
-        rewritten = _pdf_structural_rewrite(dest, actions)
+        rewritten = _pdf_structural_rewrite(dest, actions, warnings)
         c2patool = which("c2patool")
         # c2patool does not always strip; leave note
         if c2patool:
             actions.append("c2patool available for inspect; strip via exiftool/re-export")
-        return actions, {"mode": "exiftool", "structural_rewrite": rewritten}
+        return _pdf_result(
+            data, dest, actions, warnings, {"mode": "exiftool", "structural_rewrite": rewritten}
+        )
 
     # Degraded: strip obvious XMP packets between <?xpacket begin and end
     # (linear scan - the lazy .*? form is quadratic on unclosed begin markers)
@@ -1873,14 +1910,17 @@ def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
         actions.append(f"stripped XMP xpacket x{n} (degraded; may leave offsets broken)")
         # PDF structural risk: document degraded mode clearly
         safe_write_bytes(dest, new)
-        actions.append("warning: pure-stdlib PDF strip is best-effort; prefer exiftool")
-        return actions, {"mode": "stdlib-xmp", "degraded": True}
+        warnings.append("warning: pure-stdlib PDF strip is best-effort; prefer exiftool")
+        return actions + warnings, {"mode": "stdlib-xmp", "degraded": True}
 
     safe_write_bytes(dest, data)
-    actions.append(
-        "no PDF cleaner available (install exiftool for reliable metadata strip); copied as-is"
-    )
-    return actions, {"mode": "copy", "degraded": True}
+    return actions + warnings, {
+        "mode": "copy",
+        "degraded": True,
+        "note": (
+            "no PDF cleaner available (install exiftool for reliable metadata strip); copied as-is"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

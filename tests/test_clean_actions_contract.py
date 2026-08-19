@@ -9,17 +9,21 @@ container forever, and its "cleaned N file(s)" line carried no information.
 
 from __future__ import annotations
 
+import shutil
 import struct
 import sys
 import zlib
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import clean_staged
-from container_meta import clean_html, clean_markdown, clean_svg
+import container_meta
+from container_meta import clean_html, clean_markdown, clean_pdf, clean_svg
 from image_meta import strip_bmp, strip_jpeg, strip_png
 
 
@@ -175,3 +179,54 @@ def test_clean_hook_exits_0_for_an_already_clean_container(tmp_path, monkeypatch
     monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
     assert clean_staged.main() == 0
     assert f.read_bytes() == before
+
+
+# --- PDF: the operations run regardless, so judge the bytes ----------------
+
+_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 9 9]>>endobj\n"
+    b"trailer<</Root 1 0 R/Size 4>>\n%%EOF\n"
+)
+
+
+@pytest.mark.skipif(
+    shutil.which("exiftool") is None or shutil.which("qpdf") is None,
+    reason="needs real exiftool and qpdf",
+)
+def test_pdf_clean_converges_and_then_reports_no_actions(tmp_path):
+    """A second clean must produce identical bytes and no actions.
+
+    qpdf regenerates the second half of the PDF /ID on every write unless it is
+    asked not to, so cleaning the same file twice never produced the same bytes
+    and the clean could never converge (#173).
+    """
+    src = tmp_path / "in.pdf"
+    src.write_bytes(_PDF)
+    first = tmp_path / "one.pdf"
+    actions, _meta = clean_pdf(src, first)
+    assert actions, "the first pass rewrites the document, which is a real change"
+
+    second = tmp_path / "two.pdf"
+    actions2, _meta2 = clean_pdf(first, second)
+    assert second.read_bytes() == first.read_bytes(), "the clean must converge"
+    assert actions2 == []
+
+
+def test_pdf_without_a_cleaner_reports_no_actions_and_keeps_the_warning(tmp_path, monkeypatch):
+    """Copying a PDF untouched is not an action, but the user must still hear it.
+
+    The degraded-clean warning moved from `actions` (where it marked the file
+    changed) to `meta["note"]`, which clean_file.py prints as a warning.
+    """
+    monkeypatch.setattr(container_meta, "which", lambda cmd: None)
+    src = tmp_path / "in.pdf"
+    src.write_bytes(_PDF)
+    dest = tmp_path / "out.pdf"
+    actions, meta = clean_pdf(src, dest)
+    assert actions == []
+    assert dest.read_bytes() == _PDF
+    assert meta["degraded"] is True
+    assert "no PDF cleaner available" in meta["note"]

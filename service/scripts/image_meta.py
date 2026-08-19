@@ -1980,8 +1980,14 @@ def clean_image(
                 check=False,
                 preexec_fn=subprocess_preexec_fn,
             )
-            actions.append("exiftool -all= pass")
+            if dest.read_bytes() != cleaned:
+                # exiftool runs on every image whether or not there is anything
+                # left to strip. Recording the pass unconditionally marked every
+                # file modified on any machine that has exiftool installed, so
+                # only a pass that actually changed bytes is an action (#173).
+                actions.append("exiftool -all= pass")
         except Exception as e:
+            # A failed pass means the clean may be incomplete — always report it.
             actions.append(f"exiftool failed: {e}")
 
     pixel_removal: dict[str, Any] | None = None
