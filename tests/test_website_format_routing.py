@@ -77,3 +77,29 @@ def test_webp_marker_reaches_image_scanner_not_text():
 def test_html_still_text_friendly():
     assert audit_website.guess_kind("/x", b"<html><body>hi</body></html>", "text/html") == "html"
     assert audit_website.guess_kind("/page.htm", b"<html>", None) == "html"
+
+
+def _make_dummy_zip_container(files: list[str]) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for f in files:
+            zf.writestr(f, b"<dummy/>")
+    return buf.getvalue()
+
+
+def test_zip_containers_classified_by_magic_when_extensionless():
+    for internal_files, expected_kind in [
+        (["word/document.xml"], "docx"),
+        (["xl/workbook.xml"], "xlsx"),
+        (["ppt/presentation.xml"], "pptx"),
+        (["content.xml", "meta.xml"], "odt"),
+        (["META-INF/container.xml", "content.opf"], "epub"),
+    ]:
+        data = _make_dummy_zip_container(internal_files)
+        # Suffix-less URL with generic or missing content type
+        assert audit_website.guess_kind("/export?id=123", data, None) == expected_kind
+        assert audit_website.guess_kind("/download", data, "application/octet-stream") == expected_kind
+        assert audit_website.guess_kind("/download", data, "application/zip") == expected_kind

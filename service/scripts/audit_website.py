@@ -30,6 +30,7 @@ import contextlib
 
 from audit_lib import aggregate, print_human_report, scan_file
 from common import EXIT_PARTIAL, emit_json, eprint
+from container_meta import detect_container_format
 
 DEFAULT_MAX_BYTES = 4 << 20
 DEFAULT_TIMEOUT = 15
@@ -210,6 +211,10 @@ def guess_kind(url: str, data: bytes, content_type: str | None = None) -> str:
         return "svg"
     if b"<html" in data[:2000].lower() or data[:100].lstrip().lower().startswith(b"<"):
         return "html"
+    if data[:2] == b"PK":
+        container_kind = detect_container_format(Path(path), data)
+        if container_kind != "unknown":
+            return container_kind
     return "text"
 
 
