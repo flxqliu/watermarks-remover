@@ -203,11 +203,15 @@ def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
             # the parser could not read it. Report the failure as a note (and
             # a finding so audits surface it) instead of an empty, clean-looking
             # result that clean_file would certify (#163).
-            return False, False, [
-                "ID3v2 tag is truncated (declared size overruns the file); "
-                "the tag could not be read — has_c2pa/has_ai here mean "
-                "'unread', not 'clean'"
-            ]
+            return (
+                False,
+                False,
+                [
+                    "ID3v2 tag is truncated (declared size overruns the file); "
+                    "the tag could not be read — has_c2pa/has_ai here mean "
+                    "'unread', not 'clean'"
+                ],
+            )
         return False, False, []
     total, major, frames = parsed
     findings: list[str] = []
