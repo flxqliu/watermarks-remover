@@ -7,6 +7,7 @@ import base64
 import http.client
 import json
 import struct
+import subprocess
 import sys
 import threading
 import zlib
@@ -96,8 +97,6 @@ def conn() -> http.client.HTTPConnection:
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for key in (
-        "WATERMARKS_GEMINI_API_KEY",
-        "WATERMARKS_GEMINI_MODEL",
         "WATERMARKS_SYNTHID_SCORER_URL",
         "WATERMARKS_SYNTHID_SCORER_API_KEY",
         "MARKLLM_DIR",
@@ -108,7 +107,7 @@ def _clean_env(monkeypatch):
 def test_capabilities_exposes_detectors(conn):
     status, body = _get(conn, "/capabilities")
     assert status == 200
-    assert set(body["text_detectors"]) == {"gemini-synthid-text", "markllm", "claude-text"}
+    assert set(body["text_detectors"]) == {"markllm", "claude-text"}
     assert "synthid_http" in body["scorers"]
 
 
@@ -132,38 +131,36 @@ def test_detect_text_without_detectors(conn):
     names = {d["detector"] for d in body["detections"]}
     assert "stylometry" in names
     assert "claude-text" in names  # placeholder always reports unavailable
-    gemini = next(d for d in body["detections"] if d["detector"] == "gemini-synthid-text")
-    assert gemini["available"] is False
 
 
-def test_detect_text_with_gemini(conn, monkeypatch):
-    monkeypatch.setenv("WATERMARKS_GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        text_detectors.urllib.request,
-        "urlopen",
-        lambda *a, **k: _FakeResp(
-            {"candidates": [{"content": {"parts": [{"text": "Likely AI-generated"}]}}]}
-        ),
-    )
+def _markllm_watermarked(monkeypatch, tmp_path):
+    """Configure the MarkLLM detector with a stubbed subprocess result."""
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    monkeypatch.setenv("MARKLLM_DIR", str(upstream))
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"is_watermarked": True, "score": 1.0})
+        )
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+
+
+def test_detect_text_with_markllm(conn, monkeypatch, tmp_path):
+    _markllm_watermarked(monkeypatch, tmp_path)
     payload = {"file": _b64(b"watermarked prose here"), "name": "notes.txt"}
     status, body = _post(conn, "/detect", payload)
     assert status == 200
-    gemini = next(d for d in body["detections"] if d["detector"] == "gemini-synthid-text")
-    assert gemini["available"] is True
-    assert gemini["is_watermarked"] is True
+    markllm = next(d for d in body["detections"] if d["detector"] == "markllm")
+    assert markllm["available"] is True
+    assert markllm["is_watermarked"] is True
 
 
-def test_inspect_detect_is_opt_in(conn, monkeypatch):
-    monkeypatch.setenv("WATERMARKS_GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        text_detectors.urllib.request,
-        "urlopen",
-        lambda *a, **k: _FakeResp(
-            {"candidates": [{"content": {"parts": [{"text": "Likely AI-generated"}]}}]}
-        ),
-    )
+def test_inspect_detect_is_opt_in(conn, monkeypatch, tmp_path):
+    _markllm_watermarked(monkeypatch, tmp_path)
     txt = b"watermarked prose here"
-    # without the flag: no vendor calls, no text_detectors key
+    # without the flag: no detector calls, no text_detectors key
     status, body = _post(conn, "/inspect", {"file": _b64(txt), "name": "notes.txt"})
     assert status == 200
     assert "text_detectors" not in body["report"]
@@ -174,15 +171,8 @@ def test_inspect_detect_is_opt_in(conn, monkeypatch):
     assert body["suspicious"] is True
 
 
-def test_clean_text_detect_before_after(conn, monkeypatch):
-    monkeypatch.setenv("WATERMARKS_GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        text_detectors.urllib.request,
-        "urlopen",
-        lambda *a, **k: _FakeResp(
-            {"candidates": [{"content": {"parts": [{"text": "Likely AI-generated"}]}}]}
-        ),
-    )
+def test_clean_text_detect_before_after(conn, monkeypatch, tmp_path):
+    _markllm_watermarked(monkeypatch, tmp_path)
     txt = ("watermarked prose here. " * 5).encode("utf-8")
     status, body = _post(
         conn,
