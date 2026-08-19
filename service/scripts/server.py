@@ -101,6 +101,10 @@ def capabilities() -> dict[str, Any]:
             "c2patool": which("c2patool") is not None,
             "exiftool": which("exiftool") is not None,
             "qpdf": which("qpdf") is not None,
+            # LOCAL PATCH (Circe, 2026-08-19): required for MP4/MOV/M4A/M4V
+            # cleaning since av_meta.py now remuxes through ffmpeg instead of
+            # hand-editing ISOBMFF boxes -- see av_meta.py's patch notes.
+            "ffmpeg": which("ffmpeg") is not None,
         },
         "pixel_backends": {
             "ctrlregen": bool(os.environ.get("NOAI_WATERMARK_DIR")),
@@ -190,7 +194,8 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                         "tools": _schema(
                             type="object",
                             properties={
-                                k: _schema(type="boolean") for k in ("c2patool", "exiftool", "qpdf")
+                                k: _schema(type="boolean")
+                                for k in ("c2patool", "exiftool", "qpdf", "ffmpeg")
                             },
                         ),
                         "pixel_backends": _schema(

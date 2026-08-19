@@ -87,7 +87,9 @@ def test_health(conn):
 def test_capabilities(conn):
     status, body = _get(conn, "/capabilities")
     assert status == 200
-    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf"}
+    # ffmpeg added by the Circe patch (2026-08-19): MP4/MOV/M4A/M4V cleaning
+    # now remuxes through it to recompute stco/co64 -- see av_meta.py.
+    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf", "ffmpeg"}
     assert "pixel_backends" in body
     assert "scorers" in body
     assert "harnesses" in body
