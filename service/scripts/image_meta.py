@@ -512,7 +512,17 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
 
     boxes = _parse_isobmff_boxes(data)
     if not boxes:
-        return False, False, [f"not a valid {fmt.upper()} (no ISOBMFF boxes found)"]
+        # Box parsing failed (e.g. the first box's size overruns a truncated
+        # download) — that is exactly when the whole-file byte scan below is
+        # most useful, and every sibling inspector (png/jpeg/gif/tiff) still
+        # runs its equivalent after a truncation. Run the fallback, then
+        # report the parse failure alongside whatever it found (#167).
+        whole = _contains_any(data, C2PA_MARKERS)
+        if whole:
+            findings.append(f"byte-scan C2PA markers: {', '.join(whole[:6])}")
+            has_c2pa = True
+        findings.append(f"not a valid {fmt.upper()} (no ISOBMFF boxes found)")
+        return has_c2pa, has_ai or has_c2pa, findings
 
     for fourcc, payload, _, _ in boxes:
         name = fourcc.decode("latin-1", errors="replace")
