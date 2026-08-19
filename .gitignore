@@ -4,6 +4,8 @@
 /*
 !/.github/
 !/.github/**
+!/benchmarks/
+!/benchmarks/**
 !/docs/
 !/docs/**
 !/service/
