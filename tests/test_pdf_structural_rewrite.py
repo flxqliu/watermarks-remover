@@ -142,6 +142,45 @@ def test_qpdf_failure_keeps_exiftool_output_and_warns(monkeypatch, tmp_path: Pat
     assert not list(tmp_path.glob("*.qpdf-tmp"))
 
 
+def test_qpdf_is_asked_for_a_deterministic_id(monkeypatch, tmp_path: Path):
+    """qpdf must be told to derive the /ID, not to invent one.
+
+    Left to itself qpdf regenerates the second half of the PDF /ID on every
+    write, so two cleans of the same document never produce the same bytes.
+    """
+    src = tmp_path / "in.pdf"
+    dest = tmp_path / "out.pdf"
+    src.write_bytes(_ai_pdf())
+    seen = _fake_tools(monkeypatch, qpdf=True)
+
+    clean_pdf(src, dest)
+
+    qpdf_cmds = [cmd for cmd in seen if cmd[0].endswith("qpdf")]
+    assert qpdf_cmds, seen
+    assert "--deterministic-id" in qpdf_cmds[0], qpdf_cmds[0]
+
+
+@pytest.mark.skipif(
+    shutil.which("exiftool") is None or shutil.which("qpdf") is None,
+    reason="needs real exiftool and qpdf",
+)
+def test_end_to_end_repeat_clean_converges(tmp_path: Path):
+    """Cleaning an already-cleaned PDF must produce identical bytes.
+
+    Against the real tools this fails without --deterministic-id: the two runs
+    differ only in the second half of the /ID array, which is enough to make
+    every clean look like a modification forever.
+    """
+    src = tmp_path / "in.pdf"
+    src.write_bytes(_ai_pdf())
+    first = tmp_path / "one.pdf"
+    clean_pdf(src, first)
+    second = tmp_path / "two.pdf"
+    clean_pdf(first, second)
+
+    assert second.read_bytes() == first.read_bytes()
+
+
 @pytest.mark.skipif(
     shutil.which("exiftool") is None or shutil.which("qpdf") is None,
     reason="needs real exiftool and qpdf",

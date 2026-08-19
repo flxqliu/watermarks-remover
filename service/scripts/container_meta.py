@@ -1815,7 +1815,17 @@ def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
     tmp = dest.with_name(dest.name + ".qpdf-tmp")
     try:
         r = subprocess.run(
-            [qpdf, "--linearize", "--", safe_arg(str(dest)), safe_arg(str(tmp))],
+            [
+                qpdf,
+                "--linearize",
+                # qpdf regenerates the second half of the PDF /ID on every
+                # write, so without this cleaning the same file twice never
+                # produces the same bytes and the clean cannot converge.
+                "--deterministic-id",
+                "--",
+                safe_arg(str(dest)),
+                safe_arg(str(tmp)),
+            ],
             capture_output=True,
             text=True,
             timeout=120,
