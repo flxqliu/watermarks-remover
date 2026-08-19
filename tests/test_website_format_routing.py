@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import audit_website  # noqa: E402
+import audit_website
 
 
 def _webp_with_c2pa() -> bytes:
@@ -48,9 +48,16 @@ def test_mp4_classified_by_content_type_and_magic():
 def test_extended_suffix_table():
     # Every handled format's suffix classifies to its kind, not "text".
     for suffix, kind in [
-        (".avif", "avif"), (".heic", "heic"), (".gif", "gif"),
-        (".bmp", "bmp"), (".tiff", "tiff"), (".xlsx", "xlsx"),
-        (".pptx", "pptx"), (".epub", "epub"), (".wav", "wav"), (".mp3", "mp3"),
+        (".avif", "avif"),
+        (".heic", "heic"),
+        (".gif", "gif"),
+        (".bmp", "bmp"),
+        (".tiff", "tiff"),
+        (".xlsx", "xlsx"),
+        (".pptx", "pptx"),
+        (".epub", "epub"),
+        (".wav", "wav"),
+        (".mp3", "mp3"),
     ]:
         assert audit_website.guess_kind(f"/a{suffix}", b"", None) == kind, suffix
 
@@ -61,7 +68,7 @@ def test_webp_marker_reaches_image_scanner_not_text():
     import image_meta
 
     data = _webp_with_c2pa()
-    has_c2pa, has_ai, _ = image_meta.inspect_webp(data)
+    has_c2pa, _has_ai, _ = image_meta.inspect_webp(data)
     assert has_c2pa is True
     # And the site classifier routes it to that scanner's kind.
     assert audit_website.guess_kind("/img.webp", data, "image/webp") == "webp"

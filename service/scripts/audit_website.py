@@ -120,8 +120,15 @@ def guess_kind(url: str, data: bytes, content_type: str | None = None) -> str:
     # The formats the local audit (format_dispatch) handles arrived over HTTP
     # as "text" before this table knew them: the bytes fell to the Unicode
     # scanner and binary assets reported clean (#166).
-    if ct in ("image/webp", "image/avif", "image/heic", "image/heif",
-              "image/gif", "image/bmp", "image/tiff"):
+    if ct in (
+        "image/webp",
+        "image/avif",
+        "image/heic",
+        "image/heif",
+        "image/gif",
+        "image/bmp",
+        "image/tiff",
+    ):
         return {
             "image/webp": "webp",
             "image/avif": "avif",
@@ -140,7 +147,9 @@ def guess_kind(url: str, data: bytes, content_type: str | None = None) -> str:
     if ct in ("video/mp4", "video/quicktime", "audio/x-m4a", "audio/mp4"):
         return "mp4"
     if ct in ("audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3"):
-        return {"audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3", "audio/mp3": "mp3"}[ct]
+        return {"audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3", "audio/mp3": "mp3"}[
+            ct
+        ]
 
     path = urllib.parse.urlparse(url).path.lower()
     for ext, kind in (
