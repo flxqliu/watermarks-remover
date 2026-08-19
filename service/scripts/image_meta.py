@@ -504,6 +504,19 @@ def _parse_isobmff_boxes(
     return boxes
 
 
+def _build_isobmff_box(fourcc: bytes, payload: bytes, header_size: int = 8) -> bytes:
+    """Serialize an ISOBMFF box while preserving its header width."""
+    size = len(payload) + header_size
+    if header_size == 16:
+        return struct.pack(">I4sQ", 1, fourcc, size) + payload
+    return struct.pack(">I4s", size, fourcc) + payload
+
+
+def _isobmff_free_box(size: int, header_size: int = 8) -> bytes:
+    """Return an equal-size free box so later absolute offsets stay valid."""
+    return _build_isobmff_box(b"free", b"\x00" * (size - header_size), header_size)
+
+
 def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[str]]:
     findings: list[str] = []
     has_c2pa = False
@@ -1875,48 +1888,55 @@ def strip_isobmff(
     actions: list[str] = []
     out = bytearray()
 
-    for fourcc, payload, _size, _header_size in boxes:
+    for fourcc, payload, size, header_size in boxes:
         name = fourcc.decode("latin-1", errors="replace")
         if fourcc in (b"jumb", b"c2pa") or name.lower().startswith("c2"):
             actions.append(f"drop top-level {name} box (C2PA/JUMBF)")
+            out.extend(_isobmff_free_box(size, header_size))
             continue
 
         if fourcc == b"uuid":
             if payload.startswith(XMP_UUID):
                 actions.append(f"drop top-level {name} box (XMP metadata)")
+                out.extend(_isobmff_free_box(size, header_size))
                 continue
             if strip_all_metadata or _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
                 actions.append(f"drop top-level {name} box (UUID metadata)")
+                out.extend(_isobmff_free_box(size, header_size))
                 continue
 
         if fourcc == b"meta":
             meta_verflags = payload[:4] if len(payload) >= 4 else b"\x00\x00\x00\x00"
             sub_boxes = _parse_isobmff_boxes(payload, start=4)
             clean_sub = bytearray()
-            for s_fourcc, s_payload, _s_size, _s_hdr in sub_boxes:
+            for s_fourcc, s_payload, s_size, s_hdr in sub_boxes:
                 s_name = s_fourcc.decode("latin-1", errors="replace")
                 if s_fourcc in (b"jumb", b"c2pa") or s_name.lower().startswith("c2"):
                     actions.append(f"drop meta sub-box {s_name} (C2PA/JUMBF)")
+                    clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
                     continue
                 if s_fourcc == b"uuid":
                     if s_payload.startswith(XMP_UUID):
                         actions.append(f"drop meta sub-box {s_name} (XMP metadata)")
+                        clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
                         continue
                     if strip_all_metadata or _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS):
                         actions.append(f"drop meta sub-box {s_name} (UUID metadata)")
+                        clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
                         continue
                 if s_fourcc in (b"xml ", b"bxml") and (
                     strip_all_metadata or _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS)
                 ):
                     actions.append(f"drop meta sub-box {s_name} (XML metadata)")
+                    clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
                     continue
-                clean_sub.extend(struct.pack(">I", len(s_payload) + 8) + s_fourcc + s_payload)
+                clean_sub.extend(_build_isobmff_box(s_fourcc, s_payload, s_hdr))
 
             new_meta_payload = meta_verflags + clean_sub
-            out.extend(struct.pack(">I", len(new_meta_payload) + 8) + b"meta" + new_meta_payload)
+            out.extend(_build_isobmff_box(b"meta", new_meta_payload, header_size))
             continue
 
-        out.extend(struct.pack(">I", len(payload) + 8) + fourcc + payload)
+        out.extend(_build_isobmff_box(fourcc, payload, header_size))
 
     if not actions:
         actions.append(f"no {fmt.upper()} metadata boxes removed (already clean or none matched)")
