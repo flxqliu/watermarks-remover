@@ -47,14 +47,20 @@ def _clean_one(path: Path) -> str:
         # Unrecognized format or oversized input; clean_file.py already
         # explained why on stderr, this is a non-fatal skip for the hook.
         return "skipped"
+    if proc.returncode != 0:
+        # The cleaner itself failed (crash, kill, unhandled refusal): exit 0
+        # on this path used to let the commit proceed uncleaned while the
+        # traceback stayed invisible in pre-commit's non-verbose mode (#159).
+        eprint(f"{path}: clean_file.py failed (exit {proc.returncode}): {proc.stderr.strip()}")
+        return "failed"
     if not proc.stdout.strip():
         eprint(f"{path}: {proc.stderr.strip() or 'clean_file.py produced no output'}")
-        return "skipped"
+        return "failed"
     try:
         result = json.loads(proc.stdout)
     except json.JSONDecodeError:
         eprint(f"{path}: could not parse clean_file.py output")
-        return "skipped"
+        return "failed"
     return "changed" if _changed(result) else "unchanged"
 
 
@@ -66,6 +72,7 @@ def main() -> int:
     args = p.parse_args()
 
     changed_paths: list[Path] = []
+    failed_paths: list[Path] = []
     for path in args.paths:
         if not path.is_file():
             eprint(f"not a file: {path}")
@@ -73,6 +80,17 @@ def main() -> int:
         status = _clean_one(path)
         if status == "changed":
             changed_paths.append(path)
+        elif status == "failed":
+            failed_paths.append(path)
+
+    if failed_paths:
+        # A cleaner that failed must stop the commit: "already clean" and "I
+        # could not clean it" cannot share exit 0 on an auto-fix hook.
+        eprint(
+            f"watermarks-remover: clean_file.py failed on {len(failed_paths)} file(s); "
+            "commit blocked — resolve the failures above and re-stage"
+        )
+        return 1
 
     if not changed_paths:
         return 0

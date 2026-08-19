@@ -10,6 +10,8 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import check_staged
+import pytest
+
 import clean_staged
 
 
@@ -94,3 +96,53 @@ def test_pre_commit_hooks_manifest_defines_both_hooks():
     assert "id: watermarks-remover-clean" in text
     assert text.count("entry: python3 service/scripts/") == 2
     assert text.count("language: system") == 2
+
+
+def test_clean_staged_crashed_cleaner_blocks_commit(tmp_path, monkeypatch, capsys):
+    """A crashed clean_file.py must stop the commit, not read as already-clean
+    (#159). The issue's real trigger is a staged symlink (safe_write refuses,
+    traceback, empty stdout, exit != 0|2)."""
+    real = tmp_path / "real"
+    real.mkdir()
+    target = real / "target.txt"
+    target.write_text(_watermarked_text(), encoding="utf-8")
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(link)])
+    assert clean_staged.main() == 1
+    assert "failed" in capsys.readouterr().err.lower()
+
+
+def test_clean_staged_crash_exit_code_blocks_commit(tmp_path, monkeypatch, capsys):
+    """Directly pin the exit-code contract: any nonzero, non-2 cleaner exit
+    (crash, kill) yields exit 1 from the hook."""
+    from types import SimpleNamespace
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="Traceback (most recent call last): ...")
+
+    monkeypatch.setattr(clean_staged.subprocess, "run", fake_run)
+    f = tmp_path / "x.txt"
+    f.write_text("plain", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
+    assert clean_staged.main() == 1
+    err = capsys.readouterr().err
+    assert "clean_file.py failed (exit 1)" in err
+
+
+def test_clean_staged_garbage_json_blocks_commit(tmp_path, monkeypatch, capsys):
+    """Unparseable cleaner output is a failure, not a skip (#159)."""
+    from types import SimpleNamespace
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="not json at all", stderr="")
+
+    monkeypatch.setattr(clean_staged.subprocess, "run", fake_run)
+    f = tmp_path / "y.txt"
+    f.write_text("plain", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
+    assert clean_staged.main() == 1
+    assert "could not parse" in capsys.readouterr().err
