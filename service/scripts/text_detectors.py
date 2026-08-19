@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Vendor and research text-watermark detectors behind one interface.
+"""Research text-watermark detectors behind one interface.
 
-Detects statistical (Layer B) text watermarks using vendor-provided or
-research detectors. Every detector implements the same small protocol:
+Detects statistical (Layer B) text watermarks using research or vendor
+detectors. Every detector implements the same small protocol:
 
     name: str                 stable identifier (surfaced in /capabilities)
     available() -> bool       configured and usable right now
@@ -14,16 +14,18 @@ never block cleaning.
 
 Detectors:
 
-- gemini-synthid-text — Google's official SynthID-text detector, called
-  through the Gemini API (taskType DETECT_TEXT_WATERMARK). Activated by
-  WATERMARKS_GEMINI_API_KEY. User text is sent to Google only when the
-  operator sets that key.
-- markllm — optional research harness (KGW / SynthID schemes) via
+- markllm — research harness (KGW / SynthID schemes) via
   detect_text_watermark.py, activated by MARKLLM_DIR. Same-config-only
   detection; not a vendor oracle.
 - claude-text — placeholder for Anthropic's announced text-watermark
   detection API. Reports unavailable until a public endpoint exists; the
   interface it must implement is already defined here.
+
+Vendor note (Aug 2026): Google retired SynthID text watermarking on the
+Generative Language API — API text output is no longer watermarked and
+DETECT_TEXT_WATERMARK is rejected on current (3.x) models. The former
+gemini-synthid-text detector was removed for this reason; a vendor seam can
+be re-added if Google exposes detection again (e.g. via Vertex AI).
 """
 
 from __future__ import annotations
@@ -34,26 +36,12 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlparse
 
-GEMINI_DETECT_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-)
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_GEMINI_TIMEOUT = 30.0
-DEFAULT_GEMINI_MAX_CHARS = 1_000_000
 DEFAULT_MARKLLM_SCHEME = "kgw"
 DEFAULT_MARKLLM_TIMEOUT = 600.0
-
-
-class DetectorError(RuntimeError):
-    """A detector call failed (network, HTTP error, timeout)."""
 
 
 class TextDetector(Protocol):
@@ -71,196 +59,35 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
-
-
-# ---------------------------------------------------------------------------
-# Gemini (Google's official SynthID-text detector)
-# ---------------------------------------------------------------------------
-
-_WATERMARKED_VERDICTS = ("watermarked", "ai-generated", "ai generated", "likely ai")
-
-
-def _verdict_is_watermarked(verdict: str | None) -> bool | None:
-    """Map the detector model's free-text verdict to a boolean, or None."""
-    if not verdict:
+def _worker_port() -> int | None:
+    """Loopback port of a resident MarkLLM serve worker (WATERMARKS_MARKLLM_PORT)."""
+    raw = os.environ.get("WATERMARKS_MARKLLM_PORT", "").strip()
+    if not raw:
         return None
-    low = verdict.strip().lower()
-    if low.startswith(("unlikely", "no", "not")):
-        return False
-    return any(marker in low for marker in _WATERMARKED_VERDICTS)
+    try:
+        port = int(raw)
+    except ValueError:
+        return None
+    return port if 0 < port < 65536 else None
 
 
-def _extract_numeric_score(candidate: dict[str, Any], top: dict[str, Any]) -> float | None:
-    """Pull a numeric watermark score from any of the known response shapes."""
-    for container in (candidate, top):
-        for key in (
-            "syntheticTextScore",
-            "synthetic_text_score",
-            "watermarkScore",
-            "watermark_score",
-            "score",
-        ):
-            value = container.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-    attribution = candidate.get("attributionMetadata") or {}
-    if isinstance(attribution, dict):
-        for key in ("syntheticTextScore", "synthetic_text_score", "score"):
-            value = attribution.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-        st = attribution.get("syntheticText")
-        if isinstance(st, dict):
-            for key in ("score", "confidence"):
-                value = st.get(key)
-                if isinstance(value, (int, float)):
-                    return float(value)
-    return None
+def _detect_via_worker(port: int, text: str, timeout: float) -> dict[str, Any]:
+    """One detect request to a resident MarkLLM serve worker over loopback TCP."""
+    import socket as _socket
 
-
-def parse_gemini_detect_response(data: dict[str, Any]) -> dict[str, Any]:
-    """Parse a generateContent response from a DETECT_TEXT_WATERMARK call.
-
-    The endpoint can answer with either a free-text verdict
-    ("Likely AI-generated") or a structured score; both shapes are handled
-    defensively so upstream schema changes degrade to an error report
-    instead of a crash.
-    """
-    candidates = data.get("candidates") or []
-    candidate = candidates[0] if candidates else {}
-    if not isinstance(candidate, dict):
-        candidate = {}
-
-    if not candidate:
-        feedback = data.get("promptFeedback") or {}
-        block = feedback.get("blockReason")
-        if block:
-            raise DetectorError(f"Gemini blocked the request: {block}")
-        raise DetectorError("Gemini returned no candidates")
-
-    verdict: str | None = None
-    content = candidate.get("content") or {}
-    parts = content.get("parts") or []
-    if parts and isinstance(parts[0], dict):
-        verdict = parts[0].get("text")
-
-    score = _extract_numeric_score(candidate, data)
-    is_watermarked = _verdict_is_watermarked(verdict)
-    if is_watermarked is None and score is not None:
-        is_watermarked = score >= 0.5
-
-    if verdict is None and score is None:
-        raise DetectorError(
-            f"unexpected Gemini response (no verdict or score): {json.dumps(data)[:400]}"
-        )
-
-    raw = {
-        key: candidate[key]
-        for key in ("attributionMetadata", "finishReason", "index")
-        if candidate.get(key) is not None
-    }
-    return {
-        "is_watermarked": is_watermarked,
-        "score": score,
-        "verdict": verdict,
-        "raw": raw,
-    }
-
-
-def _post_json(url: str, body: dict[str, Any], api_key: str, timeout: float) -> dict[str, Any]:
-    """POST *body* to *url*, retrying once on transient failures."""
-    if urlparse(url).scheme not in ("http", "https"):
-        raise DetectorError(f"refusing non-http(s) Gemini endpoint: {url}")
-    # S310: URL scheme is restricted to http/https just above.
-    req = urllib.request.Request(  # noqa: S310
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        method="POST",
-    )
-    last_err = "Gemini API call failed"
-    for attempt in range(2):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                payload = json.loads(resp.read().decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise DetectorError("non-object Gemini response")
-                return payload
-        except urllib.error.HTTPError as e:
-            last_err = f"Gemini API HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
-            if e.code not in (429, 500, 502, 503, 504):
-                raise DetectorError(last_err) from e
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last_err = f"Gemini API unreachable: {e}"
-        if attempt == 0:
-            time.sleep(1.0)
-    raise DetectorError(last_err)
-
-
-class GeminiSynthIDTextDetector:
-    """Google's official SynthID-text detector via the Gemini API."""
-
-    name = "gemini-synthid-text"
-    vendor = "google"
-
-    def available(self) -> bool:
-        return bool(os.environ.get("WATERMARKS_GEMINI_API_KEY", "").strip())
-
-    def detect(self, text: str) -> dict[str, Any]:
-        api_key = os.environ.get("WATERMARKS_GEMINI_API_KEY", "").strip()
-        if not api_key:
-            return {
-                "detector": self.name,
-                "vendor": self.vendor,
-                "available": False,
-                "error": "WATERMARKS_GEMINI_API_KEY not set",
-            }
-
-        max_chars = _env_int("WATERMARKS_GEMINI_MAX_CHARS", DEFAULT_GEMINI_MAX_CHARS)
-        if len(text) > max_chars:
-            return {
-                "detector": self.name,
-                "vendor": self.vendor,
-                "available": True,
-                "skipped": True,
-                "reason": f"text longer than {max_chars} chars",
-                "is_watermarked": None,
-            }
-
-        model = (
-            os.environ.get("WATERMARKS_GEMINI_MODEL", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL
-        )
-        timeout = _env_float("WATERMARKS_GEMINI_TIMEOUT", DEFAULT_GEMINI_TIMEOUT)
-        url = GEMINI_DETECT_URL.format(model=model)
-        body = {
-            "contents": [{"role": "user", "parts": [{"text": text}]}],
-            "generationConfig": {"taskType": "DETECT_TEXT_WATERMARK"},
-        }
-        report: dict[str, Any] = {
-            "detector": self.name,
-            "vendor": self.vendor,
-            "model": model,
-            "available": True,
-        }
-        try:
-            data = _post_json(url, body, api_key, timeout)
-        except DetectorError as e:
-            report["available"] = False
-            report["error"] = str(e)
-            return report
-        try:
-            parsed = parse_gemini_detect_response(data)
-        except DetectorError as e:
-            report["available"] = False
-            report["error"] = str(e)
-            return report
-        report.update(parsed)
-        return report
+    with _socket.create_connection(("127.0.0.1", port), timeout=timeout) as conn:
+        conn.sendall((json.dumps({"op": "detect", "text": text}) + "\n").encode("utf-8"))
+        f = conn.makefile("r", encoding="utf-8")
+        line = f.readline()
+    if not line:
+        raise RuntimeError("worker closed without a response")
+    try:
+        resp = json.loads(line)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"worker emitted non-JSON: {line[:120]!r}") from e
+    if not isinstance(resp, dict) or not resp.get("ok"):
+        raise RuntimeError(resp.get("error") or "worker detect failed")
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -346,12 +173,31 @@ class MarkLLMTextDetector:
             report["error"] = "MARKLLM_DIR not set"
             return report
 
-        script = Path(__file__).resolve().parent / "detect_text_watermark.py"
         timeout = (
             self._timeout
             if self._timeout is not None
             else _env_float("WATERMARKS_MARKLLM_TIMEOUT", DEFAULT_MARKLLM_TIMEOUT)
         )
+
+        # Reuse a resident serve worker (WATERMARKS_MARKLLM_PORT) when one is
+        # up — avoids a ~20s torch+model cold start per detect. Falls back to
+        # a one-shot subprocess if the worker is unreachable.
+        port = _worker_port()
+        if port is not None:
+            try:
+                resp = _detect_via_worker(port, text, timeout)
+                return {
+                    **report,
+                    "available": True,
+                    "is_watermarked": bool(resp["is_watermarked"]),
+                    "score": resp.get("score"),
+                    "threshold": resp.get("threshold"),
+                    "note": "detected via resident MarkLLM serve worker",
+                }
+            except Exception as e:
+                report["error"] = f"MarkLLM worker detect failed ({e}); falling back"
+
+        script = Path(__file__).resolve().parent / "detect_text_watermark.py"
         venv_python = _venv_python(Path(upstream).expanduser().resolve())
         python = str(venv_python) if venv_python is not None else sys.executable
 
@@ -446,7 +292,7 @@ class ClaudeTextDetector:
 def all_detectors(
     markllm: MarkLLMTextDetector | None = None, *, include_markllm: bool = True
 ) -> list[TextDetector]:
-    detectors: list[TextDetector] = [GeminiSynthIDTextDetector()]
+    detectors: list[TextDetector] = []
     if include_markllm:
         detectors.append(markllm or MarkLLMTextDetector())
     detectors.append(ClaudeTextDetector())
