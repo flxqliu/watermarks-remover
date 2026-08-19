@@ -53,6 +53,7 @@ def _args(**overrides):
         rewrite_api_key=None,
         rewrite_allow_remote=False,
         rewrite_temperature=0.9,
+        rewrite_loops=1,
         chars_per_token=4.0,
         cost_per_mtok_in=0.0,
         cost_per_mtok_out=0.0,
@@ -91,8 +92,12 @@ def _fake_watermark(prompt_path, seed, out_dir):
     }
 
 
-def _rewrite_stats(cleared=True):
+def _rewrite_stats(cleared=True, evaluator="markllm", attempts_made=1, passed=True):
     return {
+        "mode": "rewritten",
+        "evaluator": evaluator,
+        "attempts_made": attempts_made,
+        "passed": passed,
         "markllm": {
             "before": dict(DETECT_POS),
             "after": {"available": True, "is_watermarked": not cleared, "score": -0.5},
@@ -107,6 +112,11 @@ def _rewrite_stats(cleared=True):
 # ---------------------------------------------------------------------------
 # Units
 # ---------------------------------------------------------------------------
+
+
+def test_default_variants_is_paraphrase_three():
+    args = bench.build_parser().parse_args(["--markllm-dir", "x", "--rewrite-model", "m"])
+    assert args.variants == "paraphrase:3"
 
 
 def test_parse_variants():
@@ -135,7 +145,7 @@ def test_load_corpus(tmp_path):
 
 
 def test_parse_stats_json_skips_warning_lines():
-    stderr = "note: running per-candidate detection\n" + json.dumps(
+    stderr = "note: evaluator=markllm attempts=1/3 passed=true\n" + json.dumps(
         {"mode": "rewritten", "markllm": {"cleared": True}}
     )
     stats = _parse_stats_json(stderr)
@@ -168,6 +178,7 @@ def test_aggregate_clear_rate_and_efficiency():
             },
             "seconds": 1.0,
             "usd": 0.0,
+            "attempts": 1,
             "notes": [],
         },
         {
@@ -187,6 +198,7 @@ def test_aggregate_clear_rate_and_efficiency():
             },
             "seconds": 2.0,
             "usd": 0.0,
+            "attempts": 3,
             "notes": [],
         },
     ]
@@ -197,6 +209,7 @@ def test_aggregate_clear_rate_and_efficiency():
     assert a["clear_rate"] == 0.5
     assert a["mean_score_delta"] == 1.75  # ((2-(-1)) + (2-1.5)) / 2
     assert a["mean_tokens_out"] == 250
+    assert a["mean_attempts"] == 2.0  # (1 + 3) / 2
     assert a["clears_per_mtok_out"] == pytest.approx(2000.0)  # 0.5 / (250/1e6)
 
 
@@ -275,6 +288,9 @@ def test_run_variants_rows_and_clear_rate(tmp_path, monkeypatch):
     rewrite_rows = [r for r in rows if r["kind"] == "rewrite"]
     assert len(rewrite_rows) == 1
     assert rewrite_rows[0]["cleared"] is True
+    assert rewrite_rows[0]["attempts"] == 1
+    assert rewrite_rows[0]["evaluator"] == "markllm"
+    assert rewrite_rows[0]["passed"] is True
     control = next(r for r in rows if r["kind"] == "control")
     assert control["cleared"] is False
     layer_a = next(r for r in rows if r["kind"] == "layer-a")
@@ -424,6 +440,8 @@ def test_main_writes_outputs(tmp_path, monkeypatch, capsys):
             "1",
             "--rewrite-model",
             "llama3.2",
+            "--variants",
+            "paraphrase:1",
             "--out-dir",
             str(out),
             "--tag",

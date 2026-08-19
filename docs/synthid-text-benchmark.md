@@ -14,6 +14,7 @@ removal variants, and emits a shareable report.
 | Quality | lexical divergence (bigram Jaccard distance), length drift, number/URL survival |
 | Cost | estimated tokens in/out, wall time per document, optional USD at your prices |
 | Efficiency | clears per million output tokens - removal rate per unit of rewrite cost |
+| Attempts | mean rewrite attempts per document (the Layer B loop stops early on pass) |
 | Controls | Layer A only (expect ~0% - Unicode scrub must not clear a statistical mark), sanity-gate exclusions, optional re-stamp check |
 
 ## How to run
@@ -25,7 +26,7 @@ Prerequisites (all external, matching the repo's optional-harness model):
 2. A rewrite backend: Ollama (default, loopback) or any
    OpenAI-compatible endpoint. The rewrite model must be a real model.
 
-    # minimal: 3 docs, 1 seed, paraphrase with 1 and 3 candidates (Ollama)
+    # minimal: 3 docs, 1 seed, paraphrase with up to 3 attempts (default, Ollama)
     MARKLLM_DIR=~/MarkLLM \
     python3 service/scripts/bench_synthid_text.py \
       --markllm-dir ~/MarkLLM \
@@ -36,7 +37,7 @@ Prerequisites (all external, matching the repo's optional-harness model):
     python3 service/scripts/bench_synthid_text.py \
       --markllm-dir ~/MarkLLM \
       --docs 10 --seeds 3 \
-      --variants "paraphrase:1,paraphrase:3,backtranslate:1" \
+      --variants "paraphrase:3,backtranslate:3" \
       --restamp-control \
       --rewrite-backend openai-compatible \
       --rewrite-model deepseek-v4-flash \
@@ -52,6 +53,23 @@ No vendor tier: Google retired SynthID text watermarking on its API in
 Aug 2026 (DETECT_TEXT_WATERMARK is rejected on current models), so detection
 here is MarkLLM same-config only. A vendor tier can be re-added if Google
 exposes detection again (e.g. via Vertex AI).
+
+**How variants map to rewrites:** each <strength>:<candidates> variant runs
+the Layer B rewrite with candidates as the **variants per evaluation round**;
+`--rewrite-loops` (default 1, mirrors `--max-loops` /
+`WATERMARKS_REWRITE_LOOPS`) sets how many rounds run before the best-effort
+variant is returned. The rewrite is iterative: it generates a variant, runs
+MarkLLM detection (same-config) on it, and stops as soon as an attempt is not
+watermarked — so a variant usually costs fewer rewrites than its candidate
+count, and paraphrase:3 means "try up to 3 variants, stop on the first pass"
+(raise `--rewrite-loops` to keep retrying new variants until one passes).
+The report's att column (and mean_attempts in results.json / attempts in
+results.csv) records the actual attempts per document.
+
+Cost warning: with MarkLLM as the evaluator, each attempt also costs one
+MarkLLM detection — up to (candidates x loops) detections per input. The
+persistent serve worker (default) keeps the model loaded so detections are
+cheap; the --no-worker one-shot path re-loads the model per detection.
 
 Cost modeling: --cost-per-mtok-in 0.30 --cost-per-mtok-out 1.20 (example
 prices) attaches an estimated USD figure per row; token counts are
@@ -78,7 +96,7 @@ docker compose --profile harness build wr-markllm
 docker compose run --rm wr-markllm \
   /app/bench_synthid_text.py --markllm-dir /opt/markllm \
   --corpus /bench-corpus --out-dir /data --tag docker-run \
-  --docs 10 --seeds 3 --variants "paraphrase:1,paraphrase:3,backtranslate:1" \
+  --docs 10 --seeds 3 --variants "paraphrase:3,backtranslate:3" \
   --restamp-control
 ```
 
