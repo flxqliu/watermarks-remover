@@ -179,6 +179,68 @@ def test_markllm_detect_applies_rlimit(monkeypatch, tmp_path):
     assert callable(captured["preexec_fn"])
 
 
+def _spin_worker_server(response):
+    import socketserver
+    import threading
+
+    class _H(socketserver.BaseRequestHandler):
+        def handle(self):
+            f = self.request.makefile("r", encoding="utf-8")
+            f.readline()
+            self.request.sendall((json.dumps(response) + "\n").encode("utf-8"))
+
+    class _S(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    srv = _S(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_markllm_detector_uses_worker_port(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    srv = _spin_worker_server({"ok": True, "is_watermarked": True, "score": 2.0, "threshold": 0.5})
+    monkeypatch.setenv("WATERMARKS_MARKLLM_PORT", str(srv.server_address[1]))
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}")
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream))
+    report = det.detect("hello")
+    srv.shutdown()
+    srv.server_close()
+    assert report["available"] is True
+    assert report["is_watermarked"] is True
+    assert report["score"] == 2.0
+    assert seen == []  # no cold-start subprocess
+    assert "worker" in report["note"]
+
+
+def test_markllm_detector_worker_fallback_to_subprocess(monkeypatch, tmp_path):
+    upstream = tmp_path / "MarkLLM"
+    upstream.mkdir()
+    monkeypatch.setenv("WATERMARKS_MARKLLM_PORT", "1")  # nothing listening
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"is_watermarked": True, "score": 1.0})
+        )
+
+    monkeypatch.setattr(text_detectors.subprocess, "run", fake_run)
+    det = text_detectors.MarkLLMTextDetector(upstream_dir=str(upstream))
+    report = det.detect("hello")
+    assert report["available"] is True
+    assert report["is_watermarked"] is True
+    assert len(calls) == 1  # fell back to the subprocess
+
+
 def test_run_all_text_detectors_can_exclude_markllm(monkeypatch):
     monkeypatch.setattr(
         text_detectors,

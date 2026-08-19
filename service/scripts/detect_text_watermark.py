@@ -26,7 +26,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
+import socketserver
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -346,25 +349,78 @@ def _cmd_serve(args: argparse.Namespace, upstream: Path, alg: str) -> int:
     def respond(payload: dict[str, Any]) -> None:
         print(json.dumps(payload), flush=True)
 
-    respond({"ready": True, "scheme": alg, "model": args.model, "device": device})
+    ready: dict[str, Any] = {"ready": True, "scheme": alg, "model": args.model, "device": device}
+    lock = threading.Lock()
+    server: socketserver.ThreadingTCPServer | None = None
+    if args.port >= 0:
+        # Loopback TCP listener so other processes (e.g. the rewrite
+        # subprocess's MarkLLM detector) can reuse this resident model
+        # instead of cold-starting their own. Port 0 = ephemeral.
+        server = _serve_socket_server(wm, threshold, args.port, lock)
+        ready["port"] = server.server_address[1]
+    respond(ready)
 
-    for raw_line in sys.stdin:
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            respond({"ok": False, "error": "invalid JSON request"})
-            continue
-        if not isinstance(req, dict):
-            respond({"ok": False, "error": "request must be a JSON object"})
-            continue
-        resp = _handle_serve_request(wm, req, threshold)
-        respond(resp)
-        if req.get("op") == "exit":
-            return 0
+    try:
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                respond({"ok": False, "error": "invalid JSON request"})
+                continue
+            if not isinstance(req, dict):
+                respond({"ok": False, "error": "request must be a JSON object"})
+                continue
+            with lock:
+                resp = _handle_serve_request(wm, req, threshold)
+            respond(resp)
+            if req.get("op") == "exit":
+                return 0
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
     return 0
+
+
+def _serve_socket_server(
+    wm: Any, threshold: float | None, port: int, lock: threading.Lock
+) -> socketserver.ThreadingTCPServer:
+    """A loopback JSON-lines TCP server sharing this process's model."""
+
+    class _Handler(socketserver.BaseRequestHandler):
+        def handle(self) -> None:
+            f = self.request.makefile("r", encoding="utf-8")
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    req = json.loads(line)
+                    if not isinstance(req, dict):
+                        raise ValueError("request must be a JSON object")
+                except (json.JSONDecodeError, ValueError):
+                    resp: dict[str, Any] = {"ok": False, "error": "invalid JSON request"}
+                else:
+                    with lock:
+                        resp = _handle_serve_request(wm, req, threshold)
+                try:
+                    self.request.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+                except OSError:
+                    return
+                if isinstance(req, dict) and req.get("op") == "exit":
+                    return
+
+    class _Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    _Server.address_family = socket.AF_INET
+    srv = _Server(("127.0.0.1", port), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -443,6 +499,13 @@ def main() -> int:
         "serve", help="Serve watermark/detect over JSON-lines stdin (persistent worker)"
     )
     _add_common(serve)
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=-1,
+        help="Also listen on 127.0.0.1:PORT (JSON-lines; 0 = ephemeral) for "
+        "other processes to reuse this resident model (default: no listener)",
+    )
     serve.set_defaults(handler=_cmd_serve)
 
     args = p.parse_args()
