@@ -47,7 +47,7 @@ def scan_file(
     if kind == "text":
         try:
             text = path.read_text(encoding="utf-8", errors="surrogateescape")
-        except OSError as e:
+        except OSError:
             # A file that could not be read is a FAILED SCAN, not a clean one:
             # the old swallowed-error item carried no confidence key, so
             # is_actionable answered False and every caller recorded the file

@@ -468,8 +468,9 @@ def test_main_rejects_private_base_cleanly(monkeypatch, capsys):
 def test_unreadable_text_file_is_a_failed_scan_not_clean(tmp_path, monkeypatch):
     """A text file the scanner cannot open must surface as skipped/partial,
     never as scanned-and-clean (#158)."""
-    import audit_lib
     from pathlib import Path
+
+    import audit_lib
 
     target = tmp_path / "notes.txt"
     target.write_text("hello", encoding="utf-8")
