@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from common import (
+    c2patool_probe_note,
     classify_finding_confidence,
     safe_arg,
     safe_write_bytes,
@@ -524,7 +525,17 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
 
     boxes = _parse_isobmff_boxes(data)
     if not boxes:
-        return False, False, [f"not a valid {fmt.upper()} (no ISOBMFF boxes found)"]
+        # Box parsing failed (e.g. the first box's size overruns a truncated
+        # download) — that is exactly when the whole-file byte scan below is
+        # most useful, and every sibling inspector (png/jpeg/gif/tiff) still
+        # runs its equivalent after a truncation. Run the fallback, then
+        # report the parse failure alongside whatever it found (#167).
+        whole = _contains_any(data, C2PA_MARKERS)
+        if whole:
+            findings.append(f"byte-scan C2PA markers: {', '.join(whole[:6])}")
+            has_c2pa = True
+        findings.append(f"not a valid {fmt.upper()} (no ISOBMFF boxes found)")
+        return has_c2pa, has_ai or has_c2pa, findings
 
     for fourcc, payload, _, _ in boxes:
         name = fourcc.decode("latin-1", errors="replace")
@@ -1321,15 +1332,34 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
             # missing manifest as "Error: No claim found", which contains
             # the substring "claim" and would otherwise read as a hit.
             no_manifest = "no claim" in low or "no jumbf" in low
-            tools["c2patool"] = {
+            has_manifest = (
+                "claim" in low or "c2pa" in low or "manifest" in low
+            ) and not no_manifest
+            # c2patool exits non-zero for a missing manifest too, so the exit
+            # code alone cannot separate "asset is clean" from "the probe
+            # never ran". Treat the run as conclusive only when it either
+            # found a manifest or said in so many words that there is none.
+            # Anything else -- a crash before main(), a kill, an unrecognized
+            # error -- leaves the C2PA question unanswered, and callers must
+            # not read that as a negative.
+            conclusive = has_manifest or no_manifest
+            entry: dict[str, Any] = {
                 "available": True,
                 "returncode": r.returncode,
                 "snippet": out[:2000],
-                "has_manifest": ("claim" in low or "c2pa" in low or "manifest" in low)
-                and not no_manifest,
+                "has_manifest": has_manifest,
+                "ok": conclusive,
             }
+            if not conclusive:
+                entry["error"] = f"exit {r.returncode}, unrecognized output"
+            tools["c2patool"] = entry
         except Exception as e:
-            tools["c2patool"] = {"available": True, "error": str(e)}
+            tools["c2patool"] = {
+                "available": True,
+                "ok": False,
+                "has_manifest": False,
+                "error": str(e),
+            }
     else:
         tools["c2patool"] = {"available": False}
 
@@ -1688,6 +1718,9 @@ def inspect_image(
     if ct.get("has_manifest"):
         has_c2pa = True
         findings.append("c2patool reports a C2PA-related manifest")
+    probe_note = c2patool_probe_note(tools)
+    if probe_note:
+        notes.append(probe_note)
 
     return ImageInspectReport(
         path=str(path),
