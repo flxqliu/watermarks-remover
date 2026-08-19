@@ -512,8 +512,6 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
     if uri_actions:
         actions.extend(uri_actions)
 
-    if not actions:
-        actions.append("no AI frontmatter keys or embedded data URIs removed")
     return out, actions
 
 
@@ -633,8 +631,6 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     if uri_actions:
         actions.extend(uri_actions)
 
-    if not actions:
-        actions.append("no HTML AI meta removed")
     return out, actions
 
 
@@ -721,8 +717,6 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
         if n:
             actions.append(f"drop generator-like attrs x{n}")
             text = new
-    if not actions:
-        actions.append("no SVG metadata removed")
     return text.encode("utf-8", errors="surrogateescape"), actions
 
 
@@ -1307,8 +1301,6 @@ def _scrub_ooxml_zip(
             zout.writestr(info, raw)
     if layer_removed or layer_replaced:
         actions.append(f"layer A text: removed={layer_removed} replaced={layer_replaced}")
-    if not actions:
-        actions.append(f"no {fmt.upper()} metadata parts removed")
     return out_buf.getvalue(), actions
 
 
@@ -1427,8 +1419,6 @@ def clean_odt(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, li
             zout.writestr(info, raw)
     if layer_removed or layer_replaced:
         actions.append(f"layer A text: removed={layer_removed} replaced={layer_replaced}")
-    if not actions:
-        actions.append("no ODT metadata removed")
     return out_buf.getvalue(), actions
 
 
@@ -1605,8 +1595,6 @@ def _scrub_epub_opf(text: str) -> tuple[str, list[str]]:
         out.append(new[last:])
         new = "".join(out)
 
-    if not actions:
-        actions.append("no OPF metadata removed")
     return new, actions
 
 
@@ -1676,7 +1664,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
             if low.endswith((".xhtml", ".html", ".htm")):
                 text = raw.decode("utf-8", errors="surrogateescape")
                 text, sub_actions = clean_html(text)
-                if sub_actions and sub_actions != ["no HTML AI meta removed"]:
+                if sub_actions:
                     actions.append(f"{name}: {', '.join(sub_actions[:2])}")
                 if also_layer_a_text:
                     text2, stats = clean_text(text)
@@ -1692,7 +1680,7 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
             if low.endswith(".opf"):
                 text = raw.decode("utf-8", errors="surrogateescape")
                 new_text, sub_actions = _scrub_epub_opf(text)
-                if sub_actions and sub_actions != ["no OPF metadata removed"]:
+                if sub_actions:
                     actions.extend(f"{name}: {a}" for a in sub_actions)
                 raw = new_text.encode("utf-8", errors="surrogateescape")
                 kept.append((info, raw))
@@ -1731,8 +1719,6 @@ def clean_epub(data: bytes, *, also_layer_a_text: bool = True) -> tuple[bytes, l
 
     if layer_removed or layer_replaced:
         actions.append(f"layer A text: removed={layer_removed} replaced={layer_replaced}")
-    if not actions:
-        actions.append("no EPUB metadata removed")
     return out_buf.getvalue(), actions
 
 

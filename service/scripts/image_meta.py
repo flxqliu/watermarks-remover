@@ -668,7 +668,7 @@ def strip_bmp(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, l
     pixel_offset, size = extent
     end = pixel_offset + size
     if end >= len(data):
-        return data, ["no BMP trailing metadata to strip"]
+        return data, []
     trailing = data[end:]
     hits = _contains_any(trailing, AI_META_HINTS + C2PA_MARKERS)
     if not strip_all_metadata and not hits:
@@ -867,8 +867,6 @@ def strip_gif(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, l
             out.extend(data[pos : pos + 1])
             pos += 1
 
-    if not actions:
-        actions.append("no GIF metadata blocks removed (already clean or none matched)")
     return bytes(out), actions
 
 
@@ -1283,8 +1281,6 @@ def strip_tiff(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
     for s, e in zero:
         out[s:e] = b"\x00" * (e - s)
 
-    if not actions:
-        actions.append("no TIFF metadata tags removed (already clean or none matched)")
     return bytes(out), actions
 
 
@@ -1739,8 +1735,6 @@ def strip_png(data: bytes, *, strip_all_text: bool = True) -> tuple[bytes, list[
             out.extend(struct.pack(">I", length) + ctype + payload + crc_bytes)
         if ctype == b"IEND":
             break
-    if not actions:
-        actions.append("no PNG metadata chunks removed (already clean or none matched)")
     return bytes(out), actions
 
 
@@ -1748,6 +1742,7 @@ def strip_jpeg(data: bytes, *, strip_all_app: bool = True) -> tuple[bytes, list[
     if not data.startswith(JPEG_SOI):
         raise ValueError("not JPEG")
     actions: list[str] = []
+    preserved_scan = False
     out = bytearray(JPEG_SOI)
     i = 2
     n = len(data)
@@ -1782,7 +1777,7 @@ def strip_jpeg(data: bytes, *, strip_all_app: bool = True) -> tuple[bytes, list[
             # Reconstruct: FF DA + rest of file
             out.extend(b"\xff\xda")
             out.extend(data[i:])
-            actions.append("preserved entropy-coded scan (SOS→EOF)")
+            preserved_scan = True
             break
 
         if i + 2 > n:
@@ -1822,8 +1817,11 @@ def strip_jpeg(data: bytes, *, strip_all_app: bool = True) -> tuple[bytes, list[
             out.extend(data[i : i + seglen])
         i = next_i
 
-    if not actions:
-        actions.append("no JPEG APP segments removed")
+    # The preserved-scan note describes what was carried over, not a change.
+    # Record it only alongside a real removal: on a no-op clean an empty
+    # actions list is what tells callers the file was untouched (#173).
+    if preserved_scan and actions:
+        actions.append("preserved entropy-coded scan (SOS→EOF)")
     return bytes(out), actions
 
 
@@ -1860,8 +1858,6 @@ def strip_webp(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
         body.extend(chunk)
         body.extend(padding if len(chunk) & 1 else b"")
 
-    if not actions:
-        actions.append("no WebP metadata chunks removed (already clean or none matched)")
     return WEBP_RIFF + struct.pack("<I", len(body)) + bytes(body), actions
 
 
@@ -1917,9 +1913,6 @@ def strip_isobmff(
             continue
 
         out.extend(struct.pack(">I", len(payload) + 8) + fourcc + payload)
-
-    if not actions:
-        actions.append(f"no {fmt.upper()} metadata boxes removed (already clean or none matched)")
 
     return bytes(out), actions
 

@@ -237,7 +237,7 @@ def test_wav_clean_file_already_clean_no_changes(tmp_path):
     src.write_bytes(data)
     dest = tmp_path / "clean.cleaned.wav"
     result = clean_av(src, dest, strip_all_metadata=True)
-    assert "no WAV metadata chunks removed" in result["actions"][0]
+    assert result["actions"] == []  # nothing removed -> no actions (#173)
     assert dest.read_bytes() == data
 
 

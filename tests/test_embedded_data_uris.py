@@ -130,7 +130,7 @@ def test_already_clean_embedded_image_no_op():
     cleaned_text, actions = clean_html(html_text)
     # The string must remain exactly identical
     assert cleaned_text == html_text
-    assert "no HTML AI meta removed" in actions
+    assert actions == []  # nothing removed -> no actions (#173)
 
 
 def test_corrupted_data_uri_graceful_fallback():

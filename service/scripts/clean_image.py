@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import backup_path, cleaned_path, eprint
+from common import backup_path, cleaned_path, eprint, print_actions
 from image_meta import clean_image
 
 
@@ -168,8 +168,7 @@ def main() -> int:
         print(json.dumps(result, indent=2))
     else:
         eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-        for a in result["actions"]:
-            eprint(f"  - {a}")
+        print_actions(result["actions"])
         if result.get("synthid_before") and result["synthid_before"].get("available"):
             label = "yes" if result["synthid_before"].get("is_watermarked") else "no"
             eprint(

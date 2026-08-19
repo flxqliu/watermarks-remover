@@ -33,6 +33,21 @@ def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
 
 
+def print_actions(actions: list[str]) -> None:
+    """Print what a clean actually did, or say plainly that it did nothing.
+
+    An empty list means nothing was removed. The strip_* helpers used to append
+    a "no X removed" filler so this report was never blank, which made the
+    actions list unconditionally truthy for every non-text kind and left
+    callers unable to tell an untouched file from a cleaned one (#173).
+    """
+    if not actions:
+        eprint("  - already clean (nothing removed)")
+        return
+    for a in actions:
+        eprint(f"  - {a}")
+
+
 def _reconfigure_stream(stream: Any, errors: str) -> None:
     """Switch a std stream to UTF-8 when it supports reconfiguration.
 

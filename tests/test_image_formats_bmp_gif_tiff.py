@@ -216,7 +216,7 @@ def test_bmp_clean_has_no_flags():
     assert any("no metadata" in f.lower() for f in findings)
     cleaned, actions = strip_bmp(data)
     assert cleaned == data
-    assert any("no BMP trailing" in a for a in actions)
+    assert actions == []  # nothing removed -> no actions (#173)
 
 
 def test_bmp_trailing_metadata_detected_and_stripped():
@@ -377,7 +377,7 @@ def test_tiff_clean_roundtrip_byte_identical():
     data, _off, _strip = _minimal_tiff(with_meta=False)
     cleaned, actions = strip_tiff(data)
     assert cleaned == data
-    assert any("no TIFF metadata tags removed" in a for a in actions)
+    assert actions == []  # nothing removed -> no actions (#173)
 
 
 def test_tiff_keep_non_ai_metadata():

@@ -137,9 +137,7 @@ def _inspect_mp4(data: bytes) -> tuple[bool, bool, list[str]]:
 def _strip_mp4(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
     cleaned, actions = strip_isobmff(data, fmt="mp4", strip_all_metadata=strip_all_metadata)
     cleaned, udta_actions = _strip_moov_udta(cleaned, strip_all_metadata=strip_all_metadata)
-    actions = [a for a in actions if not a.startswith("no MP4 metadata")] + udta_actions
-    if not actions:
-        actions = ["no MP4 metadata boxes removed (already clean or none matched)"]
+    actions = actions + udta_actions
     return cleaned, actions
 
 
@@ -234,7 +232,7 @@ def _strip_id3v2(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[
         # v2.2 (undecomposed) or an empty v2.3/2.4 tag: only a whole-tag drop
         # is safe here, since frame boundaries were never decoded.
         if not strip_all_metadata and not _contains_any(data[:total], AI_META_HINTS):
-            return data, ["no ID3v2 tag removed (no AI/C2PA markers found)"]
+            return data, []
         return rest, [f"drop ID3v2.{major} tag ({total} bytes)"]
 
     if strip_all_metadata:
@@ -254,7 +252,7 @@ def _strip_id3v2(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[
         kept.extend(frame_id + size_bytes + b"\x00\x00" + payload)
 
     if not actions:
-        return data, ["no ID3v2 frames removed (already clean or none matched)"]
+        return data, []
 
     header = bytes([ord("I"), ord("D"), ord("3"), major, 0, 0]) + _id3v2_size_bytes(len(kept))
     return header + bytes(kept) + rest, actions
@@ -324,8 +322,6 @@ def _strip_wav(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[st
         pos = cend + pad
 
     struct.pack_into("<I", out, 4, len(out) - 8)
-    if not actions:
-        actions.append("no WAV metadata chunks removed (already clean or none matched)")
     return bytes(out), actions
 
 

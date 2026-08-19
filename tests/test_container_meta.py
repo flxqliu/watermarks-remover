@@ -68,7 +68,7 @@ def test_markdown_frontmatter_with_blank_line_does_not_crash():
     cleaned, actions = clean_markdown(text)
     assert "title: Demo" in cleaned
     assert "author: you" in cleaned
-    assert actions
+    assert actions == []  # no AI keys present, so nothing removed (#173)
 
 
 def test_markdown_drops_nested_children_of_dropped_key():
