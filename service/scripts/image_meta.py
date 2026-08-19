@@ -1302,12 +1302,19 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
             # missing manifest as "Error: No claim found", which contains
             # the substring "claim" and would otherwise read as a hit.
             no_manifest = "no claim" in low or "no jumbf" in low
+            # A probe that did not answer is inconclusive, not negative: a
+            # kill, OOM, arch mismatch, or timeout landing here must never be
+            # reported as "checked, nothing found" (#155). Nonzero exit means
+            # c2patool itself judged the run failed; a clean run exits 0.
+            probe_failed = r.returncode != 0
             tools["c2patool"] = {
                 "available": True,
                 "returncode": r.returncode,
                 "snippet": out[:2000],
                 "has_manifest": ("claim" in low or "c2pa" in low or "manifest" in low)
-                and not no_manifest,
+                and not no_manifest
+                and not probe_failed,
+                "probe_failed": probe_failed,
             }
         except Exception as e:
             tools["c2patool"] = {"available": True, "error": str(e)}
@@ -1669,6 +1676,13 @@ def inspect_image(
     if ct.get("has_manifest"):
         has_c2pa = True
         findings.append("c2patool reports a C2PA-related manifest")
+    if ct.get("probe_failed"):
+        notes.append(
+            "c2patool was found but failed to run (returncode "
+            f"{ct.get('returncode')}); the C2PA probe is inconclusive — "
+            "has_c2pa: false here means the probe did not answer, not that "
+            "the asset is clean (#155)"
+        )
 
     return ImageInspectReport(
         path=str(path),

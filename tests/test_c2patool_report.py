@@ -91,3 +91,35 @@ def test_missing_c2patool_is_reported_unavailable(monkeypatch, tmp_path):
     tools = image_meta.run_optional_tools(path)
 
     assert tools["c2patool"] == {"available": False}
+
+
+def test_failed_probe_is_inconclusive_not_negative(monkeypatch, tmp_path):
+    """A c2patool that crashes (kill, OOM, arch mismatch) must not report
+    has_manifest: False as if the asset were checked and clean (#155)."""
+    _fake_c2patool(monkeypatch, "rosetta error: failed to open elf\n", -5, on_stderr=True)
+    path = tmp_path / "any.jpg"
+    path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+
+    tools = image_meta.run_optional_tools(path)
+    ct = tools["c2patool"]
+    assert ct["available"] is True
+    assert ct["probe_failed"] is True
+    assert ct["has_manifest"] is False, "a failed probe must not elevate a manifest"
+
+    # The end-to-end inspect report surfaces the inconclusive probe as a note.
+    report = image_meta.inspect_image(path)
+    assert report.has_c2pa is False
+    assert any("failed to run" in n and "inconclusive" in n for n in report.notes), report.notes
+
+
+def test_clean_run_zero_exit_still_negative_when_no_manifest(monkeypatch, tmp_path):
+    """A clean zero-exit run with the no-claim marker stays a normal negative
+    (no probe_failed, no note) — the new flag only fires on failed probes."""
+    _fake_c2patool(monkeypatch, "Error: No claim found\n", 0, on_stderr=True)
+    path = tmp_path / "clean2.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    tools = image_meta.run_optional_tools(path)
+    ct = tools["c2patool"]
+    assert ct["probe_failed"] is False
+    assert ct["has_manifest"] is False
