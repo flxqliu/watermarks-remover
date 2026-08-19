@@ -531,6 +531,7 @@ def test_worker_publishes_port_env(tmp_path, monkeypatch):
     assert "WATERMARKS_MARKLLM_PORT" not in os.environ
 
 
+# ---------------------------------------------------------------------------
 def test_aggregate_tolerates_list_in_notes():
     """A row whose notes contain a non-string must not crash aggregation."""
     rows = [
@@ -558,7 +559,6 @@ def test_aggregate_tolerates_list_in_notes():
     assert agg["rewrite-paraphrase:1"]["notes"] == ["clean note"]
 
 
-# ---------------------------------------------------------------------------
 # Persistent MarkLLM worker
 # ---------------------------------------------------------------------------
 

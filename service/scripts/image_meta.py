@@ -295,16 +295,23 @@ def _generator_product_hits(entries: list[tuple[str, str]]) -> list[str]:
     return hits
 
 
+def _png_text_hits(payload: bytes, ctype: bytes) -> tuple[list[str], list[str]]:
+    """Return flat-marker and product-name hits from a PNG text chunk."""
+    entries = _png_text_entries(payload, ctype)
+    decoded = "\n".join(value for _key, value in entries).encode("utf-8")
+    hits = _contains_any(payload + b"\n" + decoded, AI_META_HINTS + C2PA_MARKERS)
+    return hits, _generator_product_hits(entries)
+
+
 def _text_chunk_is_ai(payload: bytes, ctype: bytes) -> bool:
     """True when a PNG text chunk carries AI/C2PA markers.
 
-    Flat markers (AI_META_HINTS + C2PA_MARKERS) match anywhere in the
-    payload; generator product names only match generator-bearing key
+    Flat markers (AI_META_HINTS + C2PA_MARKERS) match the raw payload and
+    decoded text; generator product names only match generator-bearing key
     values (see _generator_product_hits).
     """
-    if _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
-        return True
-    return bool(_generator_product_hits(_png_text_entries(payload, ctype)))
+    hits, product_hits = _png_text_hits(payload, ctype)
+    return bool(hits or product_hits)
 
 
 def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
@@ -329,12 +336,11 @@ def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
             has_c2pa = True
             findings.append(f"PNG chunk {name} (possible C2PA container)")
         if ctype in (b"tEXt", b"zTXt", b"iTXt", b"eXIf"):
-            hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
-            product_hits = (
-                _generator_product_hits(_png_text_entries(payload, ctype))
-                if ctype in (b"tEXt", b"zTXt", b"iTXt")
-                else []
-            )
+            if ctype in (b"tEXt", b"zTXt", b"iTXt"):
+                hits, product_hits = _png_text_hits(payload, ctype)
+            else:
+                hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
+                product_hits = []
             if hits or product_hits:
                 has_ai = True
                 if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):

@@ -243,3 +243,76 @@ def test_detect_image_no_scorer(conn):
     assert status == 200
     assert body["kind"] == "image"
     assert body["detections"][0]["available"] is False
+
+
+def test_detect_batch_text_files(conn):
+    status, body = _post(
+        conn,
+        "/detect/batch",
+        {
+            "files": [
+                {"file": _b64(b"Hello world from simple clean text."), "name": "doc1.txt"},
+                {"file": _b64(b"Second document test."), "name": "doc2.txt"},
+            ]
+        },
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert len(body["results"]) == 2
+    res1, res2 = body["results"]
+    assert res1["name"] == "doc1.txt"
+    assert res1["ok"] is True
+    assert res1["kind"] == "text"
+    assert any(d["detector"] == "stylometry" for d in res1["detections"])
+    assert res2["name"] == "doc2.txt"
+    assert res2["ok"] is True
+
+
+def test_detect_batch_mixed_formats(conn):
+    status, body = _post(
+        conn,
+        "/detect/batch",
+        {
+            "files": [
+                {"file": _b64(b"Plain text note"), "name": "a.txt"},
+                {"file": _b64(_watermarked_png()), "name": "b.png"},
+            ]
+        },
+    )
+    assert status == 200
+    assert body["ok"] is True
+    results = {r["name"]: r for r in body["results"]}
+    assert results["a.txt"]["kind"] == "text"
+    assert results["b.png"]["kind"] == "image"
+
+
+def test_detect_batch_bad_entry_does_not_abort_others(conn):
+    status, body = _post(
+        conn,
+        "/detect/batch",
+        {
+            "files": [
+                {"file": "!!!not_base64!!!", "name": "bad.txt"},
+                {"file": _b64(b"Valid text"), "name": "good.txt"},
+            ]
+        },
+    )
+    assert status == 200
+    assert body["ok"] is True
+    results = {r["name"]: r for r in body["results"]}
+    assert results["bad.txt"]["ok"] is False
+    assert "base64" in results["bad.txt"]["error"]
+    assert results["good.txt"]["ok"] is True
+
+
+def test_detect_batch_empty_rejected(conn):
+    status, body = _post(conn, "/detect/batch", {"files": []})
+    assert status == 400
+    assert "must not be empty" in body["error"]
+
+
+def test_detect_batch_openapi_spec_registered(conn):
+    status, body = _get(conn, "/openapi.json")
+    assert status == 200
+    assert "/detect/batch" in body["paths"]
+    assert "post" in body["paths"]["/detect/batch"]
