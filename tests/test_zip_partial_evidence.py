@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import container_meta  # noqa: E402
+import container_meta
 
 MARKER = b"<dc:creator>c2pa contentcredentials OpenAI</dc:creator>"
 
@@ -53,7 +53,7 @@ def test_corrupt_later_member_keeps_earlier_evidence():
     # must not discard the earlier marker evidence.
     restore = _fail_read_for(container_meta, "customXml/item1.xml")
     try:
-        has_c2pa, has_ai, findings, meta = container_meta.inspect_docx(_docx_bytes())
+        has_c2pa, has_ai, findings, _ = container_meta.inspect_docx(_docx_bytes())
     finally:
         restore()
     assert has_c2pa and has_ai, findings
@@ -71,7 +71,7 @@ def test_odt_partial_read_keeps_evidence():
         zf.writestr("meta.xml", "<meta:generator>Claude</meta:generator>")
     restore = _fail_read_for(container_meta, "content.xml")
     try:
-        has_c2pa, has_ai, findings, _ = container_meta.inspect_odt(buf.getvalue())
+        has_c2pa, _has_ai, findings, _ = container_meta.inspect_odt(buf.getvalue())
     finally:
         restore()
     assert has_c2pa, findings
@@ -90,7 +90,7 @@ def test_epub_partial_read_keeps_evidence():
     try:
         has_ai, findings = None, None
         r = container_meta.inspect_epub(buf.getvalue())
-        has_c2pa, has_ai, findings, _ = r
+        _has_c2pa, has_ai, findings, _ = r
     finally:
         restore()
     assert has_ai, findings
@@ -105,7 +105,7 @@ def test_wholly_garbage_bytes_keep_not_a_valid_shape():
 
 
 def test_intact_docx_finds_markers_without_partial_note():
-    has_c2pa, has_ai, findings, _ = container_meta.inspect_docx(_docx_bytes())
+    has_c2pa, _has_ai, findings, _ = container_meta.inspect_docx(_docx_bytes())
     assert has_c2pa is True
     assert any("docProps/core.xml" in f for f in findings)
     assert not any("partial read" in f.lower() for f in findings)
