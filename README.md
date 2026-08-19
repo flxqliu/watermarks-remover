@@ -21,7 +21,7 @@ Agent skill + stdlib Python service to strip **multi-vendor AI provenance marks*
 | **B** | Statistical (token-sampling) text watermarks | Agent rewrite + optional `rewrite_text.py` hook |
 | **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, AVIF, HEIC, BMP, GIF, TIFF, SVG, PDF, DOCX, XLSX, PPTX, EPUB, ODT, HTML, Markdown, MP4/MOV/M4A/M4V, WAV, MP3 |
 
-Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style marks.
+Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style (green-list) and keyed-Gumbel / EXP (Aaronson) marks.
 
 **Latest release:** [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0)
 
@@ -165,7 +165,7 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/health` | — | `{"ok": true, "version": ...}` |
-| GET | `/capabilities` | — | optional tools / backends present |
+| GET | `/capabilities` | — | optional tools / backends usable (each tool is version-probed, not just found on `PATH`) |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
@@ -203,6 +203,7 @@ Text detectors (see `/capabilities` → `text_detectors`):
 | Detector | Activated by | Notes |
 | --- | --- | --- |
 | `markllm` | `MARKLLM_DIR` (host checkout) | Research harness (KGW / SynthID schemes), same-config-only — not a vendor oracle. |
+| `gumbel` | `WATERMARKS_GUMBEL_KEY` | Model-free same-key replay of the keyed-Gumbel (Aaronson EXP) scheme (see `detect_gumbel.py`), stdlib-only — self-hosted engines such as arbi-serve; same-key-only, not a vendor oracle. |
 | `claude-text` | — (placeholder) | Anthropic has announced a watermark detection API; this seam activates when it ships. |
 
 Image scoring: when `WATERMARKS_SYNTHID_SCORER_URL` is set, the service
@@ -290,6 +291,7 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | `WATERMARKS_REWRITE_API_KEY` | `rewrite_text.py` hook | API key — env only, never on argv |
 | `WATERMARKS_REWRITE_ALLOW_REMOTE` | `rewrite_text.py` hook | `1` to allow non-loopback endpoints |
 | `WATERMARKS_REWRITE_REASONING_EFFORT` | `rewrite_text.py` hook | `none` (default) / `low` / `medium` / `high` / `off` |
+| `WATERMARKS_GUMBEL_KEY` | `detect_gumbel.py` / `text_detectors.py` | Secret key for keyed-Gumbel (EXP) same-key replay (e.g. `0x…`); preferred over argv — never logged |
 
 Layer B is agent-orchestrated in the skill (it rewrites with its own model), so the `WATERMARKS_REWRITE_*` vars are only needed when driving `rewrite_text.py` directly.
 
@@ -593,6 +595,47 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$(pwd):/data" \
   watermarks-remover-markllm detect /data/wm.txt --scheme kgw --json
 ```
 
+### Keyed-Gumbel (Aaronson EXP) same-key verification
+
+[ARBI's technical report](https://arbicity.com/news/ai-text-watermarking-for-self-hosted-ai/) describes the
+keyed-Gumbel ("exponential") text watermark — now shipping in the open-source
+arbi-serve engine (`ARBI_WATERMARK_KEY`) — where the sampler's noise is derived
+from a keyed hash of the last 4-token context window. Detection is a
+**model-free replay**: recompute `u = PRF(Hash(key, window), token)` from the
+text alone and test the Gamma tail, so it needs no GPU, model, or logits.
+This repo ships that detector as `detect_gumbel.py` (stdlib-only; the p-value
+is the exact Poisson-sum identity for an integer Gamma shape):
+
+```bash
+# Text mode (deterministic word/run tokenizer) — quick checks and rewrite-loop
+# evaluation; exact replay against a real engine needs its tokenizer:
+python3 service/scripts/detect_gumbel.py draft.txt --key 0x... --json
+
+# Exact replay: pass the engine's token ids (JSON array or one per line).
+python3 service/scripts/detect_gumbel.py ids.json --tokens --key 0x... --json
+```
+
+Same honesty caveat as MarkLLM: this is a **same-key replay** — valid only
+against the same key, tokenizer, and PRF layout used at generation, and a
+negative result establishes nothing. The HMAC-SHA256 layout here is an
+auditable instantiation, not bit-compatible with any specific engine kernel
+(see the module docstring for what to adapt for exact replay).
+
+**Detection-guided rewriting:** pass `--gumbel-key` to `rewrite_text.py`
+(env: `WATERMARKS_GUMBEL_KEY`, preferred) and the iterative rewrite loop is
+driven by the same-key Gumbel replay — evaluator priority becomes gumbel >
+MarkLLM > lexical divergence — with a `gumbel.before/after/cleared` report:
+
+```bash
+export WATERMARKS_REWRITE_BACKEND=ollama WATERMARKS_REWRITE_MODEL=llama3.2
+export WATERMARKS_GUMBEL_KEY=0x...
+python3 "$SCRIPTS/rewrite_text.py" wm.txt -o wm.rewritten.txt --json-stats
+```
+
+The key never appears in stats or logs. Self-hosted operators who hold their
+engine's key can verify a rewrite cleared a Gumbel mark; everyone else treats
+Layer B as best-effort only.
+
 ## Optional SynthID-text removal benchmark
 
 [`bench_synthid_text.py`](service/scripts/bench_synthid_text.py) measures how
@@ -868,7 +911,7 @@ repos:
       # - id: watermarks-remover-clean # opt-in: cleans staged files in place instead
 ```
 
-`watermarks-remover-check` fails the commit and lists findings; `watermarks-remover-clean` is opt-in and rewrites staged files in place (exits non-zero so you review the diff and re-stage — the same convention as auto-fixing hooks like `ruff --fix`). Run either by hand with `python3 service/scripts/check_staged.py <files...>` / `clean_staged.py <files...>`.
+`watermarks-remover-check` fails the commit and lists findings; `watermarks-remover-clean` is opt-in and rewrites staged files in place (exits 1 so you review the diff and re-stage — the same convention as auto-fixing hooks like `ruff --fix`). When the cleaner cannot process a file at all — it crashed, was killed, or produced no report — `watermarks-remover-clean` names that file and exits 3 instead, so a cleaner that failed is never mistaken for an already-clean file. Run either by hand with `python3 service/scripts/check_staged.py <files...>` / `clean_staged.py <files...>`.
 
 ## Tests
 
@@ -880,8 +923,12 @@ make smoke                          # quick CLI smoke on fixtures
 
 ## Changelog
 
-### Unreleased — detection-guided iterative Layer B rewriting
+### Unreleased
 
+- **Strip reserved Default_Ignorable code points in Layer A**: `U+2065`, `U+FFF0`–`U+FFF8`, `U+E0000`, `U+E0080`–`U+E00FF`, and `U+E01F0`–`U+E0FFF` are unassigned code points carrying `Other_Default_Ignorable_Code_Point=Yes`, so conformant renderers display them invisibly, normalisation preserves them, and category-based (`Cf`) scrubbing never sees them: ideal covert carriers with no legitimate use in interchange text. Layer A now strips them and inspect reports them under the new `reserved_ignorable` kind. Applied to both the service engine and the vendored lightweight-skill copy
+- **Fix Layer A missing three invisible Default_Ignorable carriers**: `U+180F` (Mongolian free variation selector-4, added in Unicode 14), `U+3164` (Hangul filler), and `U+FFA0` (halfwidth Hangul filler) are blank-rendering Default_Ignorable code points, but their Unicode categories (`Mn`/`Lo`) meant the `Cf` catch-all never saw them and they were absent from the strip set — so both `inspect_text` and `clean_text` passed them through untouched even between plain ASCII. They are now stripped and flagged like their already-covered siblings (`U+180B`–`U+180D`, `U+115F`/`U+1160`), with the same in-context preservation: `U+180F` is kept after a Mongolian letter exactly like FVS1–3, and `U+3164`/`U+FFA0` are kept after a Hangul jamo of their own presentation form (compatibility jamo `U+3131`–`U+318E`, halfwidth jamo `U+FFA1`–`U+FFDC`) exactly like the conjoining fillers, so partial-syllable text is not corrupted. Applied to both the service engine and the vendored lightweight-skill copy
+- **Strip Unicode noncharacters in Layer A**: the 66 noncharacters (`U+FDD0`–`U+FDEF` plus `U+FFFE`/`U+FFFF` at the end of every plane) are permanently reserved for internal use and prohibited in interchange text, render as nothing or tofu, and survive normalisation, yet both `inspect_text` and `clean_text` passed them through untouched: a ready-made covert channel. Layer A now strips them and inspect reports them under the new `noncharacter` kind. Unlike other reserved ranges they can never be assigned, so stripping carries no future-Unicode risk. Applied to both the service engine and the vendored lightweight-skill copy
+- **Stop stripping visible-layout format controls next to their own script**: Egyptian hieroglyph quadrat controls (`U+13430`–`U+1343F`), Duployan shorthand controls (`U+1BCA0`–`U+1BCA3`), and musical beam/tie/slur/phrase controls (`U+1D173`–`U+1D17A`) are category `Cf`, so the catch-all stripped them, yet they visibly govern how their script renders (quadrat stacking, shorthand overlaps, beaming): removing them changes the rendered text, contradicting the "cleaners preserve the document body" invariant. They are now preserved when adjacent to their own script, exactly like the existing Mongolian/Khmer/Hangul handling, and still stripped (and flagged) when floating between unrelated text; `--strip-emoji-glue` paranoid mode still strips them everywhere. Applied to both the service engine and the vendored lightweight-skill copy
 - **Layer B rewriting is now iterative and evaluation-driven**: each round
   generates `--candidates` variants (default 1,
   `WATERMARKS_REWRITE_CANDIDATES`) and `--max-loops` (default 1,
@@ -897,6 +944,15 @@ make smoke                          # quick CLI smoke on fixtures
   now carry attempts per document (`mean_attempts`, `att` column;
   `attempts` / `evaluator` / `passed` columns); `--rewrite-loops`
   mirrors `--max-loops`.
+- **Keyed-Gumbel (Aaronson EXP) same-key verification**: new stdlib-only
+  `detect_gumbel.py` implements the model-free replay test of ARBI's keyed-Gumbel
+  report (u = PRF(Hash(key, window), token); exact Gamma-tail p-value; repeated-
+  window masking) — no GPU, model, or logits. `rewrite_text.py --gumbel-key`
+  (env `WATERMARKS_GUMBEL_KEY`, preferred) makes it the iterative-loop evaluator
+  (priority: gumbel > markllm > lexical divergence) with a `gumbel.before/after/
+  cleared` report; the detector is also exposed as `gumbel` in `/capabilities`
+  and `/detect`. Same-key-only: valid against the same key, tokenizer, and PRF
+  layout used at generation — not a vendor oracle. The key is never logged.
 
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
 
@@ -1041,13 +1097,14 @@ make smoke                          # quick CLI smoke on fixtures
 
 MIT — see [LICENSE](LICENSE).
 
-## References
+## Bibliography
 
 - [How Claude marks AI-generated content](https://support.claude.com/en/articles/16266773-how-claude-marks-ai-generated-content) (Anthropic)
 - Dathathri et al., [*Scalable watermarking for identifying large language model outputs*](https://www.nature.com/articles/s41586-024-08025-4) (SynthID-Text, Nature 2024)
 - Google AI for Developers, [*SynthID safeguards*](https://ai.google.dev/responsible/docs/safeguards/synthid) (Gemini API docs)
 - [C2PA](https://c2pa.org/) / [c2patool](https://github.com/contentauth/c2pa-rs/tree/main/cli)
 - Kirchenbauer et al., [*A Watermark for Large Language Models*](https://arxiv.org/abs/2301.10226)
+- Evseev, D. (Arbitration City), [*Accurate, Costless, and Invisible AI Text Watermarking for Self-Hosted AI Inference*](https://arbicity.com/news/ai-text-watermarking-for-self-hosted-ai/) (technical report, August 2026) — keyed-Gumbel watermarking shipped in the open-source arbi-serve engine, with exact-test detection and speculative-decoding support — [PDF](https://arbicity.com/news/ai-text-watermarking-for-self-hosted-ai/ARBI-Watermark-Technical-Paper.pdf)
 - [THU-BPM/MarkLLM](https://github.com/THU-BPM/MarkLLM) (unified toolkit for evaluating LLM watermarking algorithms)
 - Pan et al., [*MarkDiffusion: An Open-Source Toolkit for Generative Watermarking of Latent Diffusion Models*](https://arxiv.org/abs/2509.10569) (JMLR) — the embedding toolkit this repo's optional image-watermark harness wraps — [code](https://github.com/THU-BPM/MarkDiffusion), [docs](https://markdiffusion.readthedocs.io)
 - Zhang et al., [*Watermarks in the Sand: Impossibility of Strong Watermarking for Generative Models*](https://arxiv.org/abs/2311.04378v5) (ICML 2024)
