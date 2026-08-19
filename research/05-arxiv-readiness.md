@@ -7,7 +7,9 @@ research/README.md decision log).
 
 This file itemizes **everything missing** between the current repo and
 a submittable arXiv v1. It is a hand-off to the implementation phase —
-**nothing listed here is implemented yet**. Items are marked with the
+**as of PR #174 all code/analysis gaps (A1-A7, B1-B3) and the paper
+skeleton/bibliography (C1/C2) are implemented**; the experiment run
+(D) and publishing logistics (E) remain. Items are marked with the
 stage of the pipeline they block (generate → attack → detect →
 evaluate → paper → publish).
 

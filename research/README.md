@@ -1,7 +1,8 @@
 # research/ — Watermark Removal: Measurement Study & Paper Kit
 
 Working area for turning the `watermarks-remover` project into a
-publishable research paper. As of the arXiv-v1 implementation PR, the
+publishable research paper. As of the arXiv-v1 implementation PR
+(https://github.com/guillaumemeyer/watermarks-remover/pull/174), the
 full code/analysis gap list (05-A1..A7, B1..B3, C1/C2) is implemented
 here; the multi-week experiment run (05-D) and publishing logistics
 (05-E) remain. Generated run data stays gitignored (`research/results/`).
