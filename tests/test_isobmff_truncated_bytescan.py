@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import image_meta  # noqa: E402
+import image_meta
 
 
 def _avif(marker: bytes, first_box_overruns: bool) -> bytes:
@@ -34,7 +34,7 @@ def test_truncated_avif_still_bytescans_for_c2pa():
     data = _avif(b"c2pa contentcredentials", first_box_overruns=True)
     assert b"c2pa" in data
 
-    has_c2pa, has_ai, findings = image_meta.inspect_isobmff(data, fmt="avif")
+    has_c2pa, _, findings = image_meta.inspect_isobmff(data, fmt="avif")
     # The byte-scan fallback fires instead of the early clean-looking return.
     assert has_c2pa is True, findings
     assert any("byte-scan C2PA markers" in f for f in findings), findings
