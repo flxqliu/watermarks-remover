@@ -1706,6 +1706,15 @@ def strip_png(data: bytes, *, strip_all_text: bool = True) -> tuple[bytes, list[
         chunk_start = pos + 8
         chunk_end = chunk_start + length
         if chunk_end + 4 > len(data):
+            # A truncated chunk (interrupted download): copy the remainder
+            # verbatim instead of dropping it — dropping turned a recoverable
+            # image into an unopenable husk while reporting "already clean"
+            # (#170). Note it as an action so the run is never mistaken for
+            # an ordinary no-op clean.
+            out.extend(data[pos:])
+            actions.append(
+                f"kept {len(data) - pos} bytes of truncated chunk {ctype.decode('latin-1', errors='replace')} tail (file truncated)"
+            )
             break
         payload = data[chunk_start:chunk_end]
         crc_bytes = data[chunk_end : chunk_end + 4]
@@ -1872,6 +1881,16 @@ def strip_isobmff(
     if not boxes:
         raise ValueError(f"not a valid {fmt.upper()} (no ISOBMFF boxes)")
 
+    # How far the box walk reached: the parser stops at the first box whose
+    # declared size overruns the data (a truncated download), and the rebuild
+    # below used to emit only the boxes that parsed — dropping a truncated
+    # mdat, the actual coded image, while reporting "already clean" (#170).
+    parsed_end = 0
+    _pos = 0
+    for _fourcc, _payload, _size, _header in boxes:
+        parsed_end = _pos + _size
+        _pos = parsed_end
+
     actions: list[str] = []
     out = bytearray()
 
@@ -1917,6 +1936,12 @@ def strip_isobmff(
             continue
 
         out.extend(struct.pack(">I", len(payload) + 8) + fourcc + payload)
+
+    if parsed_end < len(data):
+        out.extend(data[parsed_end:])
+        actions.append(
+            f"kept {len(data) - parsed_end} bytes of truncated tail (file truncated)"
+        )
 
     if not actions:
         actions.append(f"no {fmt.upper()} metadata boxes removed (already clean or none matched)")
