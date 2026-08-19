@@ -165,7 +165,7 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/health` | — | `{"ok": true, "version": ...}` |
-| GET | `/capabilities` | — | optional tools / backends present |
+| GET | `/capabilities` | — | optional tools / backends usable (each tool is version-probed, not just found on `PATH`) |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
@@ -911,7 +911,7 @@ repos:
       # - id: watermarks-remover-clean # opt-in: cleans staged files in place instead
 ```
 
-`watermarks-remover-check` fails the commit and lists findings; `watermarks-remover-clean` is opt-in and rewrites staged files in place (exits non-zero so you review the diff and re-stage — the same convention as auto-fixing hooks like `ruff --fix`). Run either by hand with `python3 service/scripts/check_staged.py <files...>` / `clean_staged.py <files...>`.
+`watermarks-remover-check` fails the commit and lists findings; `watermarks-remover-clean` is opt-in and rewrites staged files in place (exits 1 so you review the diff and re-stage — the same convention as auto-fixing hooks like `ruff --fix`). When the cleaner cannot process a file at all — it crashed, was killed, or produced no report — `watermarks-remover-clean` names that file and exits 3 instead, so a cleaner that failed is never mistaken for an already-clean file. Run either by hand with `python3 service/scripts/check_staged.py <files...>` / `clean_staged.py <files...>`.
 
 ## Tests
 
@@ -923,8 +923,12 @@ make smoke                          # quick CLI smoke on fixtures
 
 ## Changelog
 
-### Unreleased — detection-guided iterative Layer B rewriting
+### Unreleased
 
+- **Strip reserved Default_Ignorable code points in Layer A**: `U+2065`, `U+FFF0`–`U+FFF8`, `U+E0000`, `U+E0080`–`U+E00FF`, and `U+E01F0`–`U+E0FFF` are unassigned code points carrying `Other_Default_Ignorable_Code_Point=Yes`, so conformant renderers display them invisibly, normalisation preserves them, and category-based (`Cf`) scrubbing never sees them: ideal covert carriers with no legitimate use in interchange text. Layer A now strips them and inspect reports them under the new `reserved_ignorable` kind. Applied to both the service engine and the vendored lightweight-skill copy
+- **Fix Layer A missing three invisible Default_Ignorable carriers**: `U+180F` (Mongolian free variation selector-4, added in Unicode 14), `U+3164` (Hangul filler), and `U+FFA0` (halfwidth Hangul filler) are blank-rendering Default_Ignorable code points, but their Unicode categories (`Mn`/`Lo`) meant the `Cf` catch-all never saw them and they were absent from the strip set — so both `inspect_text` and `clean_text` passed them through untouched even between plain ASCII. They are now stripped and flagged like their already-covered siblings (`U+180B`–`U+180D`, `U+115F`/`U+1160`), with the same in-context preservation: `U+180F` is kept after a Mongolian letter exactly like FVS1–3, and `U+3164`/`U+FFA0` are kept after a Hangul jamo of their own presentation form (compatibility jamo `U+3131`–`U+318E`, halfwidth jamo `U+FFA1`–`U+FFDC`) exactly like the conjoining fillers, so partial-syllable text is not corrupted. Applied to both the service engine and the vendored lightweight-skill copy
+- **Strip Unicode noncharacters in Layer A**: the 66 noncharacters (`U+FDD0`–`U+FDEF` plus `U+FFFE`/`U+FFFF` at the end of every plane) are permanently reserved for internal use and prohibited in interchange text, render as nothing or tofu, and survive normalisation, yet both `inspect_text` and `clean_text` passed them through untouched: a ready-made covert channel. Layer A now strips them and inspect reports them under the new `noncharacter` kind. Unlike other reserved ranges they can never be assigned, so stripping carries no future-Unicode risk. Applied to both the service engine and the vendored lightweight-skill copy
+- **Stop stripping visible-layout format controls next to their own script**: Egyptian hieroglyph quadrat controls (`U+13430`–`U+1343F`), Duployan shorthand controls (`U+1BCA0`–`U+1BCA3`), and musical beam/tie/slur/phrase controls (`U+1D173`–`U+1D17A`) are category `Cf`, so the catch-all stripped them, yet they visibly govern how their script renders (quadrat stacking, shorthand overlaps, beaming): removing them changes the rendered text, contradicting the "cleaners preserve the document body" invariant. They are now preserved when adjacent to their own script, exactly like the existing Mongolian/Khmer/Hangul handling, and still stripped (and flagged) when floating between unrelated text; `--strip-emoji-glue` paranoid mode still strips them everywhere. Applied to both the service engine and the vendored lightweight-skill copy
 - **Layer B rewriting is now iterative and evaluation-driven**: each round
   generates `--candidates` variants (default 1,
   `WATERMARKS_REWRITE_CANDIDATES`) and `--max-loops` (default 1,
