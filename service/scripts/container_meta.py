@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from common import (
+    c2patool_probe_note,
     classify_finding_confidence,
     safe_arg,
     safe_write_bytes,
@@ -1794,6 +1795,9 @@ def inspect_pdf(path: Path, data: bytes) -> tuple[bool, bool, list[str], dict]:
     if ct.get("has_manifest"):
         has_c2pa = True
         findings.append("c2patool reports C2PA-related manifest")
+    probe_note = c2patool_probe_note(tools)
+    if probe_note:
+        findings.append(probe_note)
     return has_c2pa, has_ai or has_c2pa, findings, {"tools": tools}
 
 
