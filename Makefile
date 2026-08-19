@@ -4,7 +4,7 @@
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
 	bench-synthid-text \
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
-	install-skill install-cursor-text-skill clean
+	install-skill install-cursor-text-skill mac-app mac-app-run mac-app-icon clean
 
 SCRIPTS := service/scripts
 PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
@@ -13,13 +13,13 @@ test:
 	$(PYTHON) -m pytest
 
 lint:
-	$(PYTHON) -m ruff check service tests
+	$(PYTHON) -m ruff check service tests app/macos/Scripts
 
 format:
-	$(PYTHON) -m ruff format --check service tests
+	$(PYTHON) -m ruff format --check service tests app/macos/Scripts
 
 lint-fix:
-	$(PYTHON) -m ruff check --fix service tests
+	$(PYTHON) -m ruff check --fix service tests app/macos/Scripts
 
 smoke:
 	-python3 $(SCRIPTS)/inspect_text.py tests/fixtures/sample_watermarked.txt
@@ -128,6 +128,16 @@ install-skill:
 install-cursor-text-skill:
 	$(PYTHON) install_skill.py
 
+# macOS app (SwiftUI front end over the same HTTP service). macOS + Swift only.
+mac-app:
+	./app/macos/Scripts/build-app.sh
+
+mac-app-run: mac-app
+	open "app/macos/build/Watermarks Remover.app"
+
+mac-app-icon:
+	$(PYTHON) app/macos/Scripts/make_icon.py --out app/macos/build/AppIcon.iconset
+
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	rm -rf .pytest_cache .venv
+	rm -rf .pytest_cache .venv app/macos/.build app/macos/build

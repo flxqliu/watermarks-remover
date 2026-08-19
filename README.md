@@ -101,6 +101,26 @@ Optional system tools (auto-used when present — preinstalled in the core Docke
 
 Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional.
 
+## macOS app
+
+A native SwiftUI front end lives in [`app/macos/`](app/macos/). It is a thin
+client like the skill: it starts `service/scripts/server.py` on a private
+loopback port with a per-launch bearer token and drives the documented HTTP API,
+so it inherits every format and every fix from the pipeline below.
+
+```bash
+make mac-app        # -> app/macos/build/Watermarks Remover.app
+make mac-app-run    # build and launch
+```
+
+Requires macOS 13+, Swift 5.9+ (Xcode or the Command Line Tools) and a Python
+3.10+ interpreter. Drag files or folders in for a per-file verdict (hidden
+characters with codepoints and confidence, metadata findings, C2PA flags,
+stylometry, detector results), clean them next to the original / into a folder /
+in place, and export the whole run as JSON. A text scratchpad inspects and
+cleans pasted drafts in memory. Detector toggles that call vendor APIs are off
+by default. Details in [`app/macos/README.md`](app/macos/README.md).
+
 ## Quick use (scripts)
 
 ```bash

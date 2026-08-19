@@ -2,6 +2,8 @@
 # Local test artifacts, secrets (.env), and tooling stay out without a rule
 # for each one. Tracked files are unaffected.
 /*
+!/app/
+!/app/**
 !/.github/
 !/.github/**
 !/benchmarks/
@@ -32,6 +34,8 @@
 
 # Exceptions even inside allowed trees
 .env
+/app/macos/.build/
+/app/macos/build/
 **/__pycache__/
 *.pyc
 .venv/
