@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from av_meta import inspect_av
 from common import (
     MAX_INPUT_BYTES,
     ROUTER_ADVICE,
@@ -31,7 +32,7 @@ def main() -> int:
     p.add_argument(
         "--as",
         dest="force_type",
-        choices=("text", "image", "container", "auto"),
+        choices=("text", "image", "container", "av", "auto"),
         default="auto",
     )
     p.add_argument(
@@ -58,7 +59,9 @@ def main() -> int:
         if args.force_type == "text" or args.force_text:
             kind = "text"
         else:
-            note = "unrecognized format; pass --as text|image|container or --force-text to override"
+            note = (
+                "unrecognized format; pass --as text|image|container|av or --force-text to override"
+            )
             if args.json:
                 emit_json({"kind": "unknown", "path": file_label, "note": note})
             else:
@@ -89,6 +92,21 @@ def main() -> int:
         else:
             print(f"File: {file_label}")
             print("Kind: image")
+            print(f"Path: {report.path}")
+            print(f"Format: {report.format}")
+            print(f"C2PA: {report.has_c2pa}")
+            print(f"AI metadata: {report.has_ai_metadata}")
+            for f in report.findings:
+                print(f"  - [{classify_finding_confidence(f)}] {f}")
+        return 0 if not (report.has_c2pa or report.has_ai_metadata) else 1
+
+    if kind == "av":
+        report = inspect_av(args.path)
+        if args.json:
+            emit_json({"kind": "av", "path": file_label, **report.to_dict()})
+        else:
+            print(f"File: {file_label}")
+            print("Kind: av")
             print(f"Path: {report.path}")
             print(f"Format: {report.format}")
             print(f"C2PA: {report.has_c2pa}")

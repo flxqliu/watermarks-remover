@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import struct
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -25,10 +27,17 @@ from common import (
     safe_write_text,
 )
 from container_meta import (
+    _SVG_METADATA_CLOSE_RE,
+    _SVG_METADATA_OPEN_RE,
     MAX_ZIP_DECOMPRESSED_BYTES,
     ZipBudgetExceeded,
     _check_zip_budget,
+    _drop_tag_blocks,
+    _pdf_structured_blob,
     _read_zip_member,
+    clean_html,
+    clean_odt,
+    clean_svg,
     inspect_docx,
 )
 
@@ -230,6 +239,130 @@ def test_read_stdin_under_cap_ok(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(common, "MAX_STDIN_BYTES", 1024)
     monkeypatch.setattr(sys, "stdin", io.StringIO("hello stdin"))
     assert read_text_input(None) == "hello stdin"
+
+
+# ---------------------------------------------------------------------------
+# Quadratic-regex DoS (GHSA-7vpp-96qp-j9wh): lazy .*? block stripping
+# ---------------------------------------------------------------------------
+#
+# clean_svg / clean_odt (and the other tag-block scans below) used lazy
+# ".*?</close>" regexes. With many opening tags and no closing tag, CPython
+# rescans to end-of-input from every candidate start - quadratic, and the
+# GIL stalls the whole single-process service. The scans are now linear;
+# these tests assert both the timing fix and the preserved behavior.
+
+
+def _assert_completes_fast(fn, *args, budget_s: float = 5.0):
+    start = time.perf_counter()
+    result = fn(*args)
+    elapsed = time.perf_counter() - start
+    assert elapsed < budget_s, f"took {elapsed:.1f}s (linear scan expected < {budget_s}s)"
+    return result
+
+
+def test_clean_svg_metadata_flood_is_linear():
+    # ~256 KiB of unclosed <metadata> tags. The old lazy regex measured
+    # ~25 s at this size; the linear scan is milliseconds.
+    flood = b"<metadata>" * (256 * 1024 // 11)
+    assert b"</metadata>" not in flood
+    cleaned, actions = _assert_completes_fast(clean_svg, flood)
+    # No closing tag exists, so nothing is stripped - the block is preserved.
+    assert cleaned == flood
+    assert not any(a.startswith("drop <metadata>") for a in actions)
+
+
+def test_clean_svg_mixed_closed_and_unclosed_metadata():
+    svg = b"<svg><metadata>c2pa Anthropic</metadata><metadata>open</svg>"
+    cleaned, actions = clean_svg(svg)
+    # The closed block is stripped; the unclosed one is preserved verbatim.
+    assert b"<metadata>c2pa" not in cleaned
+    assert b"<metadata>open</svg>" in cleaned
+    assert any(a.startswith("drop <metadata>") for a in actions)
+
+
+def test_clean_odt_generator_flood_is_linear():
+    # GHSA-7vpp-96qp-j9wh PoC shape: an ODT whose meta.xml is ~512 KiB of
+    # unclosed <meta:generator> tags (about 1.4 KiB on the wire after DEFLATE).
+    payload = b"<meta:generator>" * (512 * 1024 // 16)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", b"application/vnd.oasis.opendocument.text")
+        zf.writestr("content.xml", b"<x/>")
+        zf.writestr("meta.xml", payload)
+    cleaned, _actions = _assert_completes_fast(clean_odt, buf.getvalue())
+    # Unclosed blocks are preserved: the payload round-trips untouched.
+    with zipfile.ZipFile(io.BytesIO(cleaned)) as zf:
+        assert zf.read("meta.xml") == payload
+
+
+def test_clean_svg_comment_end_forms():
+    # HTML comment end tags are "-->" or "--!>" (CodeQL bad-html-filtering
+    # regexp). Comments in either form must be stripped when they carry AI
+    # provenance markers and kept otherwise.
+    svg = b"<svg><!-- Anthropic --!><!-- plain --></svg>"
+    cleaned, actions = clean_svg(svg)
+    assert b"Anthropic" not in cleaned
+    assert b"plain" in cleaned
+    assert any("comment" in a for a in actions)
+
+
+def test_clean_html_jsonld_flood_is_linear():
+    flood = '<script type="application/ld+json">' * (128 * 1024 // 39)
+    assert "</script>" not in flood
+    cleaned, _actions = _assert_completes_fast(clean_html, flood)
+    assert cleaned == flood
+
+
+def test_pdf_stream_and_xpacket_floods_are_linear():
+    stream_flood = b"stream\n" * (256 * 1024 // 8)
+    assert b"endstream" not in stream_flood
+    blob = _assert_completes_fast(_pdf_structured_blob, stream_flood)
+    assert blob == stream_flood + b"\n"
+
+    xpacket_flood = b"<?xpacket begin" * (256 * 1024 // 15)
+    assert b"<?xpacket end" not in xpacket_flood
+    blob = _assert_completes_fast(_pdf_structured_blob, xpacket_flood)
+    assert blob == xpacket_flood + b"\n"
+
+
+def test_tag_block_scan_matches_lazy_regex_semantics():
+    # The linear scan must strip exactly what the old lazy regex stripped,
+    # on well- and malformed inputs alike (closed, unclosed, mixed, nested,
+    # case variants, and a closing tag smuggled inside an attribute value).
+    lazy = re.compile(r"<metadata\b[^>]*>.*?</metadata\s*>", re.I | re.DOTALL)
+    samples = [
+        "",
+        "<metadata>a</metadata>",
+        "<metadata>a</metadata><metadata>b</metadata>",
+        "<metadata>unclosed",
+        "<metadata>a</metadata><metadata>unclosed",
+        "x<metadata>a</metadata>y",
+        "<metadata foo='x'>a</metadata >",
+        "<METADATA>a</METADATA>",
+        "<metadata><metadata>nested</metadata>",
+        "<metadata>a</metadata><metadata>b</metadata><metadata>c",
+        "<metadata foo='" + "</metadata>" + "'>tail</metadata>",
+    ]
+    for sample in samples:
+        expected, n_expected = re.subn(lazy, "", sample)
+        got, n_got = _drop_tag_blocks(sample, _SVG_METADATA_OPEN_RE, _SVG_METADATA_CLOSE_RE)
+        assert got == expected, (sample, expected, got)
+        assert n_got == n_expected, (sample, n_expected, n_got)
+
+
+def test_scrub_text_runs_is_linear_on_unclosed_runs():
+    # (w:t)-style body scrubs share the same lazy pattern class; a run of
+    # unclosed <w:t> tags must not blow up either.
+    from container_meta import _scrub_docx_text
+
+    flood = "<w:t>" * (128 * 1024 // 5)
+    assert "</w:t>" not in flood
+    start = time.perf_counter()
+    out, removed, replaced = _scrub_docx_text(flood)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 5.0, f"took {elapsed:.1f}s"
+    assert out == flood
+    assert removed == 0 and replaced == 0
 
 
 def test_reconfigure_stream_writes_utf8():

@@ -274,3 +274,129 @@ def test_404(conn):
     assert status == 404
     status, _body = _post(conn, "/nope", {"file": _b64(b"x")})
     assert status == 404
+
+
+def test_openapi_spec_covers_batch_endpoints(conn):
+    status, body = _get(conn, "/openapi.json")
+    assert status == 200
+    assert "/inspect/batch" in body["paths"]
+    assert "post" in body["paths"]["/inspect/batch"]
+    assert "/clean/batch" in body["paths"]
+    assert "post" in body["paths"]["/clean/batch"]
+
+
+def test_inspect_batch_mixed_results(conn):
+    watermarked = ("Hello" + chr(0x200B) + "World!").encode("utf-8")
+    clean = b"nothing to see here"
+    status, body = _post(
+        conn,
+        "/inspect/batch",
+        {
+            "files": [
+                {"file": _b64(watermarked), "name": "a.txt"},
+                {"file": _b64(clean), "name": "b.txt"},
+            ]
+        },
+    )
+    assert status == 200
+    assert body["ok"] is True
+    results = {r["name"]: r for r in body["results"]}
+    assert results["a.txt"]["ok"] is True
+    assert results["a.txt"]["suspicious"] is True
+    assert results["b.txt"]["ok"] is True
+    assert results["b.txt"]["suspicious"] is False
+
+
+def test_clean_batch_mixed_results(conn):
+    watermarked = ("Hello" + chr(0x200B) + "World!").encode("utf-8")
+    status, body = _post(
+        conn,
+        "/clean/batch",
+        {
+            "files": [
+                {"file": _b64(watermarked), "name": "a.txt"},
+                {"file": _b64(b"x"), "name": "b.unknownext"},
+            ]
+        },
+    )
+    assert status == 200
+    assert body["ok"] is True
+    results = {r["name"]: r for r in body["results"]}
+    assert results["a.txt"]["ok"] is True
+    cleaned = base64.b64decode(results["a.txt"]["cleaned"]).decode("utf-8")
+    assert cleaned == "HelloWorld!"
+    assert results["b.unknownext"]["ok"] is False
+    assert "unrecognized file format" in results["b.unknownext"]["error"]
+
+
+def test_batch_one_bad_option_does_not_abort_others(conn):
+    status, body = _post(
+        conn,
+        "/clean/batch",
+        {
+            "files": [
+                {"file": _b64(b"hello"), "name": "a.txt", "options": {"nope": 1}},
+                {"file": _b64(b"hello"), "name": "b.txt"},
+            ]
+        },
+    )
+    assert status == 200
+    results = {r["name"]: r for r in body["results"]}
+    assert results["a.txt"]["ok"] is False
+    assert "unknown option" in results["a.txt"]["error"]
+    assert results["b.txt"]["ok"] is True
+
+
+def test_batch_empty_files_rejected(conn):
+    status, body = _post(conn, "/inspect/batch", {"files": []})
+    assert status == 400
+    assert "must not be empty" in body["error"]
+
+
+def test_batch_missing_files_field_rejected(conn):
+    status, body = _post(conn, "/clean/batch", {})
+    assert status == 400
+    assert "files" in body["error"]
+
+
+def test_batch_over_limit_rejected(conn, monkeypatch):
+    monkeypatch.setattr(server, "MAX_BATCH_FILES", 2)
+    status, body = _post(
+        conn,
+        "/inspect/batch",
+        {"files": [{"file": _b64(b"x"), "name": "a.txt"}] * 3},
+    )
+    assert status == 400
+    assert "batch limit" in body["error"]
+
+
+def test_clean_jpeg_preserves_format_extension(conn):
+    # Minimal valid JPEG bytes (SOI + APP0 + EOI)
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(jpeg_bytes), "name": "photo.jpg"},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["kind"] == "image"
+    assert body["report"]["format"] == "jpeg"
+    cleaned = base64.b64decode(body["cleaned"])
+    assert cleaned[:2] == b"\xff\xd8"
+
+
+def test_clean_extensionless_svg_container_post_inspection(conn):
+    svg_bytes = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><metadata>c2pa test</metadata><rect/></svg>'
+    )
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(svg_bytes)},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["kind"] == "container"
+    assert body["report"]["format"] == "svg"
+    assert body["report"]["still_has_c2pa"] is False

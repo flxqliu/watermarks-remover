@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from common import (
+    c2patool_probe_note,
     classify_finding_confidence,
     safe_arg,
     safe_write_bytes,
@@ -295,16 +296,23 @@ def _generator_product_hits(entries: list[tuple[str, str]]) -> list[str]:
     return hits
 
 
+def _png_text_hits(payload: bytes, ctype: bytes) -> tuple[list[str], list[str]]:
+    """Return flat-marker and product-name hits from a PNG text chunk."""
+    entries = _png_text_entries(payload, ctype)
+    decoded = "\n".join(value for _key, value in entries).encode("utf-8")
+    hits = _contains_any(payload + b"\n" + decoded, AI_META_HINTS + C2PA_MARKERS)
+    return hits, _generator_product_hits(entries)
+
+
 def _text_chunk_is_ai(payload: bytes, ctype: bytes) -> bool:
     """True when a PNG text chunk carries AI/C2PA markers.
 
-    Flat markers (AI_META_HINTS + C2PA_MARKERS) match anywhere in the
-    payload; generator product names only match generator-bearing key
+    Flat markers (AI_META_HINTS + C2PA_MARKERS) match the raw payload and
+    decoded text; generator product names only match generator-bearing key
     values (see _generator_product_hits).
     """
-    if _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
-        return True
-    return bool(_generator_product_hits(_png_text_entries(payload, ctype)))
+    hits, product_hits = _png_text_hits(payload, ctype)
+    return bool(hits or product_hits)
 
 
 def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
@@ -329,12 +337,11 @@ def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
             has_c2pa = True
             findings.append(f"PNG chunk {name} (possible C2PA container)")
         if ctype in (b"tEXt", b"zTXt", b"iTXt", b"eXIf"):
-            hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
-            product_hits = (
-                _generator_product_hits(_png_text_entries(payload, ctype))
-                if ctype in (b"tEXt", b"zTXt", b"iTXt")
-                else []
-            )
+            if ctype in (b"tEXt", b"zTXt", b"iTXt"):
+                hits, product_hits = _png_text_hits(payload, ctype)
+            else:
+                hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
+                product_hits = []
             if hits or product_hits:
                 has_ai = True
                 if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
@@ -1302,15 +1309,34 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
             # missing manifest as "Error: No claim found", which contains
             # the substring "claim" and would otherwise read as a hit.
             no_manifest = "no claim" in low or "no jumbf" in low
-            tools["c2patool"] = {
+            has_manifest = (
+                "claim" in low or "c2pa" in low or "manifest" in low
+            ) and not no_manifest
+            # c2patool exits non-zero for a missing manifest too, so the exit
+            # code alone cannot separate "asset is clean" from "the probe
+            # never ran". Treat the run as conclusive only when it either
+            # found a manifest or said in so many words that there is none.
+            # Anything else -- a crash before main(), a kill, an unrecognized
+            # error -- leaves the C2PA question unanswered, and callers must
+            # not read that as a negative.
+            conclusive = has_manifest or no_manifest
+            entry: dict[str, Any] = {
                 "available": True,
                 "returncode": r.returncode,
                 "snippet": out[:2000],
-                "has_manifest": ("claim" in low or "c2pa" in low or "manifest" in low)
-                and not no_manifest,
+                "has_manifest": has_manifest,
+                "ok": conclusive,
             }
+            if not conclusive:
+                entry["error"] = f"exit {r.returncode}, unrecognized output"
+            tools["c2patool"] = entry
         except Exception as e:
-            tools["c2patool"] = {"available": True, "error": str(e)}
+            tools["c2patool"] = {
+                "available": True,
+                "ok": False,
+                "has_manifest": False,
+                "error": str(e),
+            }
     else:
         tools["c2patool"] = {"available": False}
 
@@ -1669,6 +1695,9 @@ def inspect_image(
     if ct.get("has_manifest"):
         has_c2pa = True
         findings.append("c2patool reports a C2PA-related manifest")
+    probe_note = c2patool_probe_note(tools)
+    if probe_note:
+        notes.append(probe_note)
 
     return ImageInspectReport(
         path=str(path),
