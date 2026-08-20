@@ -287,9 +287,7 @@ def is_mutating_action(action: str) -> bool:
         return False
     if "failed" in action_lower:
         return False
-    if action_lower.startswith("layer a text: removed=0 replaced=0"):
-        return False
-    return True
+    return not action_lower.startswith("layer a text: removed=0 replaced=0")
 
 
 def result_has_changes(result: dict[str, Any]) -> bool:
@@ -307,10 +305,13 @@ def backup_path(src: Path) -> Path:
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically
     renamed over it. Preserves an existing .bak so repeated in-place runs never
-    overwrite the original uncleaned file.
+    overwrite the original uncleaned file, while still refusing symlinks.
     """
     bak = src.with_suffix(src.suffix + ".bak")
-    if bak.exists():
+    if bak.is_symlink():
+        eprint(f"cannot create backup {bak}: refusing to write through symlink: {bak}")
+        raise SystemExit(2)
+    if bak.is_file():
         return bak
     try:
         safe_write_bytes(bak, src.read_bytes())

@@ -1,10 +1,9 @@
-import io
-import json
 import struct
 import subprocess
 import sys
 import zlib
 from pathlib import Path
+
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +11,6 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import clean_staged
-import common
 
 
 def _clean_png_bytes() -> bytes:
@@ -24,15 +22,17 @@ def _clean_png_bytes() -> bytes:
         + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
     )
     iend_chunk = (
-        struct.pack(">I", 0)
-        + b"IEND"
-        + struct.pack(">I", zlib.crc32(b"IEND") & 0xFFFFFFFF)
+        struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND") & 0xFFFFFFFF)
     )
     return b"\x89PNG\r\n\x1a\n" + ihdr_chunk + iend_chunk
 
 
 def _clean_jpeg_bytes() -> bytes:
-    return b"\xff\xd8\xff\xdb\x00\x43\x00" + b"\x00" * 64 + b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xd9"
+    return (
+        b"\xff\xd8\xff\xdb\x00\x43\x00"
+        + b"\x00" * 64
+        + b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xd9"
+    )
 
 
 def _clean_pdf_bytes() -> bytes:

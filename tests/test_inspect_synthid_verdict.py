@@ -1,12 +1,7 @@
-import http.client
-import json
-import socket
 import struct
 import sys
-import threading
 import zlib
 from pathlib import Path
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
@@ -25,9 +20,7 @@ def _clean_png_bytes() -> bytes:
         + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
     )
     iend_chunk = (
-        struct.pack(">I", 0)
-        + b"IEND"
-        + struct.pack(">I", zlib.crc32(b"IEND") & 0xFFFFFFFF)
+        struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND") & 0xFFFFFFFF)
     )
     return b"\x89PNG\r\n\x1a\n" + ihdr_chunk + iend_chunk
 

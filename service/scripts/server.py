@@ -665,9 +665,16 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
     )
     synthid_wm = False
     synthid_entry = report.get("synthid")
-    if synthid_entry and synthid_entry.get("available") and (
-        synthid_entry.get("is_watermarked")
-        or (synthid_entry.get("confidence") is not None and synthid_entry.get("confidence") >= 0.5)
+    if (
+        synthid_entry
+        and synthid_entry.get("available")
+        and (
+            synthid_entry.get("is_watermarked")
+            or (
+                synthid_entry.get("confidence") is not None
+                and synthid_entry.get("confidence") >= 0.5
+            )
+        )
     ):
         synthid_wm = True
 

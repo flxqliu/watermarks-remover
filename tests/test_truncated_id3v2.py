@@ -1,7 +1,5 @@
-import struct
 import sys
 from pathlib import Path
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
@@ -21,7 +19,7 @@ def _truncated_id3v2_mp3() -> bytes:
 
 def test_inspect_truncated_id3v2_reports_finding():
     data = _truncated_id3v2_mp3()
-    has_c2pa, has_ai, findings = av_meta._inspect_id3v2(data)
+    _has_c2pa, _has_ai, findings = av_meta._inspect_id3v2(data)
     assert len(findings) > 0
     assert any("truncated" in f.lower() and "id3" in f.lower() for f in findings)
 
