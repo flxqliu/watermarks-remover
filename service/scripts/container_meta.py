@@ -882,7 +882,18 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
             custom = [n for n in parts if n.startswith("customXml/")]
             if custom:
                 findings.append(f"customXml parts: {len(custom)}")
-    except _ZIP_PARSE_ERRORS:
+    except _ZIP_PARSE_ERRORS as exc:
+        # A member that failed to read must not discard the evidence already
+        # collected from earlier members, nor read as "opened and found
+        # clean": keep the flags/findings, append a partial-read note, and
+        # only a wholly-garbage container (nothing accumulated) keeps the old
+        # not-a-valid-zip shape (#164).
+        if findings:
+            findings.append(
+                f"partial read of {fmt.upper()} zip ({exc.__class__.__name__}); "
+                "evidence above survives, later members were not scanned"
+            )
+            return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(parts)}
         return False, False, [f"not a valid {fmt.upper()} zip"], {}
     return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(parts)}
 
@@ -1349,7 +1360,13 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
                 if re.search(r"generator|claude|openai|anthropic|gemini", meta, re.I):
                     has_ai = True
                     findings.append("meta.xml generator-like fields")
-    except _ZIP_PARSE_ERRORS:
+    except _ZIP_PARSE_ERRORS as exc:
+        if findings:
+            findings.append(
+                f"partial read of ODT zip ({exc.__class__.__name__}); "
+                "evidence above survives, later members were not scanned"
+            )
+            return has_c2pa, has_ai or has_c2pa, findings, {}
         return False, False, ["not a valid ODT zip"], {}
     return has_c2pa, has_ai or has_c2pa, findings, {}
 
@@ -1496,6 +1513,7 @@ def inspect_epub(data: bytes) -> tuple[bool, bool, list[str], dict]:
     has_ai = False
     budget = [0]
     encrypted = _epub_encrypted_parts(data)
+    names: list[str] = []
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             names = zf.namelist()
@@ -1532,7 +1550,17 @@ def inspect_epub(data: bytes) -> tuple[bool, bool, list[str], dict]:
                     has_c2pa = has_c2pa or c2
                     has_ai = has_ai or ai
                     findings.append(f"{name}: {', '.join(hits[:6])}")
-    except zipfile.BadZipFile:
+    except _ZIP_PARSE_ERRORS as exc:
+        # EPUB previously caught only BadZipFile, so a zlib error propagated
+        # (crashing the scan) while a CRC failure discarded everything —
+        # neither is right. Same partial-read contract as the OOXML/ODT
+        # inspectors (#164).
+        if findings:
+            findings.append(
+                f"partial read of EPUB zip ({exc.__class__.__name__}); "
+                "evidence above survives, later members were not scanned"
+            )
+            return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(names)}
         return False, False, ["not a valid EPUB zip"], {}
     return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(names)}
 
