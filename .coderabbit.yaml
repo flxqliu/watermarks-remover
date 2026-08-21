@@ -35,12 +35,5 @@ reviews:
         - Pin actions to commit SHA with a comment version, matching existing style.
         - CODEOWNERS: only the maintainer approves/merges; CodeRabbit feedback is advisory.
 
-security:
-  vulnerability_check:
-    enable: true
-    auto_approve: false
-  dependency_scanning:
-    enable: true
-
 chat:
   auto_reply: true
