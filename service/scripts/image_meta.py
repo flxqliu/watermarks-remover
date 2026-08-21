@@ -476,10 +476,14 @@ XMP_UUID = b"\xbe\x7a\xcf\xcb\x97\xa9\x42\xe8\x9c\x71\x99\x94\x91\xe3\xaf\xac"
 
 def _parse_isobmff_boxes(
     data: bytes, start: int = 0, end: int | None = None
-) -> list[tuple[bytes, bytes, int, int]]:
+) -> tuple[list[tuple[bytes, bytes, int, int]], int]:
     """Parse top-level or container ISOBMFF boxes.
 
-    Returns list of (fourcc, payload, total_box_size, header_size).
+    Returns (boxes, scanned_end): the list of (fourcc, payload,
+    total_box_size, header_size) tuples and the offset where the walk
+    stopped -- the start of the first box that could not be parsed (an
+    overrunning box, or a run of fewer than 8 trailing bytes), or `end`
+    when the whole buffer parsed.
     """
     if end is None:
         end = len(data)
@@ -502,7 +506,7 @@ def _parse_isobmff_boxes(
         payload = data[pos + header_size : pos + size]
         boxes.append((fourcc, payload, size, header_size))
         pos += size
-    return boxes
+    return boxes, pos
 
 
 def _build_isobmff_box(fourcc: bytes, payload: bytes, header_size: int = 8) -> bytes:
@@ -523,7 +527,7 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
     has_c2pa = False
     has_ai = False
 
-    boxes = _parse_isobmff_boxes(data)
+    boxes, _ = _parse_isobmff_boxes(data)
     if not boxes:
         # Box parsing failed (e.g. the first box's size overruns a truncated
         # download) — that is exactly when the whole-file byte scan below is
@@ -563,7 +567,7 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                     if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                         has_c2pa = True
         elif fourcc == b"meta":
-            meta_sub = _parse_isobmff_boxes(payload, start=4)
+            meta_sub, _ = _parse_isobmff_boxes(payload, start=4)
             for s_fourcc, s_payload, _, _ in meta_sub:
                 s_name = s_fourcc.decode("latin-1", errors="replace")
                 if s_fourcc in (b"jumb", b"c2pa") or s_name.lower().startswith("c2"):
@@ -1752,6 +1756,15 @@ def strip_png(data: bytes, *, strip_all_text: bool = True) -> tuple[bytes, list[
         chunk_start = pos + 8
         chunk_end = chunk_start + length
         if chunk_end + 4 > len(data):
+            # A truncated chunk (interrupted download): copy the remainder
+            # verbatim instead of dropping it — dropping turned a recoverable
+            # image into an unopenable husk while reporting "already clean"
+            # (#170). Note it as an action so the run is never mistaken for
+            # an ordinary no-op clean.
+            out.extend(data[pos:])
+            actions.append(
+                f"kept {len(data) - pos} bytes of truncated chunk {ctype.decode('latin-1', errors='replace')} tail (file truncated)"
+            )
             break
         payload = data[chunk_start:chunk_end]
         crc_bytes = data[chunk_end : chunk_end + 4]
@@ -1914,10 +1927,15 @@ def strip_webp(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
 def strip_isobmff(
     data: bytes, fmt: str = "avif", *, strip_all_metadata: bool = True
 ) -> tuple[bytes, list[str]]:
-    boxes = _parse_isobmff_boxes(data)
+    boxes, scanned_end = _parse_isobmff_boxes(data)
     if not boxes:
         raise ValueError(f"not a valid {fmt.upper()} (no ISOBMFF boxes)")
 
+    # scanned_end is where the box walk stopped: the parser halts at the first
+    # box whose declared size overruns the data (a truncated download). The
+    # rebuild below used to emit only the boxes that parsed — dropping a
+    # truncated mdat, the actual coded image, while reporting "already clean"
+    # (#170); the tail is appended verbatim afterwards instead.
     actions: list[str] = []
     out = bytearray()
 
@@ -1940,7 +1958,7 @@ def strip_isobmff(
 
         if fourcc == b"meta":
             meta_verflags = payload[:4] if len(payload) >= 4 else b"\x00\x00\x00\x00"
-            sub_boxes = _parse_isobmff_boxes(payload, start=4)
+            sub_boxes, _ = _parse_isobmff_boxes(payload, start=4)
             clean_sub = bytearray()
             for s_fourcc, s_payload, s_size, s_hdr in sub_boxes:
                 s_name = s_fourcc.decode("latin-1", errors="replace")
@@ -1970,6 +1988,15 @@ def strip_isobmff(
             continue
 
         out.extend(_build_isobmff_box(fourcc, payload, header_size))
+
+    if scanned_end < len(data):
+        tail = data[scanned_end:]
+        out.extend(tail)
+        # An 8-byte header whose box overruns the data is a truncated download
+        # worth reporting; fewer than 8 leftover bytes is merely trailing junk
+        # and is kept verbatim without claiming the file was truncated (#170).
+        if len(tail) >= 8:
+            actions.append(f"kept {len(tail)} bytes of truncated tail (file truncated)")
 
     if not actions:
         actions.append(f"no {fmt.upper()} metadata boxes removed (already clean or none matched)")

@@ -96,10 +96,10 @@ def _inspect_moov_udta(data: bytes) -> tuple[bool, bool, list[str]]:
     has_c2pa = False
     has_ai = False
     findings: list[str] = []
-    for fourcc, payload, _size, _hdr in _parse_isobmff_boxes(data):
+    for fourcc, payload, _size, _hdr in _parse_isobmff_boxes(data)[0]:
         if fourcc != b"moov":
             continue
-        for s_fourcc, s_payload, _s_size, _s_hdr in _parse_isobmff_boxes(payload):
+        for s_fourcc, s_payload, _s_size, _s_hdr in _parse_isobmff_boxes(payload)[0]:
             if s_fourcc != b"udta":
                 continue
             hits = _contains_any(s_payload, AI_META_HINTS)
@@ -114,12 +114,12 @@ def _inspect_moov_udta(data: bytes) -> tuple[bool, bool, list[str]]:
 def _strip_moov_udta(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     out = bytearray()
-    for fourcc, payload, _size, hdr in _parse_isobmff_boxes(data):
+    for fourcc, payload, _size, hdr in _parse_isobmff_boxes(data)[0]:
         if fourcc != b"moov":
             out.extend(_build_isobmff_box(fourcc, payload, hdr))
             continue
         new_moov = bytearray()
-        for s_fourcc, s_payload, s_size, s_hdr in _parse_isobmff_boxes(payload):
+        for s_fourcc, s_payload, s_size, s_hdr in _parse_isobmff_boxes(payload)[0]:
             if s_fourcc == b"udta" and (
                 strip_all_metadata or _contains_any(s_payload, AI_META_HINTS)
             ):
