@@ -321,9 +321,6 @@ def backup_path(src: Path) -> tuple[Path, bool]:
     one, so callers can tell the user.
     """
     bak = src.with_suffix(src.suffix + ".bak")
-    if bak.is_symlink():
-        eprint(f"cannot create backup {bak}: refusing to write through symlink: {bak}")
-        raise SystemExit(2)
     if bak.exists():
         return bak, False
     try:
