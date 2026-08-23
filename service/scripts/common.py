@@ -280,13 +280,19 @@ def safe_write_text(path: str | Path, text: str) -> None:
 def is_mutating_action(action: str) -> bool:
     """True if *action* describes an actual modification, False for informational notices."""
     action_lower = action.strip().lower()
-    if action_lower.startswith("no ") or action_lower.startswith("warning:"):
-        return False
-    if "already clean" in action_lower or "none matched" in action_lower:
-        return False
-    if "available for inspect" in action_lower:
-        return False
-    if "failed" in action_lower:
+    if (
+        action_lower.startswith("no ")
+        or action_lower.startswith("warning:")
+        or "not needed" in action_lower
+        or "skipped" in action_lower
+        or "preserved" in action_lower
+        or "already clean" in action_lower
+        or "none matched" in action_lower
+        or "available for inspect" in action_lower
+        or "failed" in action_lower
+        or "left unchanged" in action_lower
+        or "kept" in action_lower
+    ):
         return False
     return not action_lower.startswith("layer a text: removed=0 replaced=0")
 
