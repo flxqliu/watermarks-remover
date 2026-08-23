@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from audit_lib import is_actionable, scan_file
-from common import MAX_INPUT_BYTES, eprint
+from common import MAX_INPUT_BYTES, eprint, subprocess_creationflags
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
@@ -147,6 +147,7 @@ def run_clean(path: Path) -> int:
             capture_output=True,
             text=True,
             check=False,
+            creationflags=subprocess_creationflags,
         )
         if proc.returncode == 2:
             # Unrecognized format or oversized input; clean_file.py explained
