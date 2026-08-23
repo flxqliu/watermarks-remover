@@ -129,7 +129,7 @@ def main() -> int:
 
     src = args.path
     if args.in_place:
-        bak = backup_path(args.path)
+        bak, _ = backup_path(args.path)
         src = bak
         dest = args.path
     else:

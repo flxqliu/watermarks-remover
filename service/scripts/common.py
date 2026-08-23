@@ -306,26 +306,32 @@ def result_has_changes(result: dict[str, Any]) -> bool:
     return any(is_mutating_action(a) for a in actions)
 
 
-def backup_path(src: Path) -> Path:
-    """Create a ``.bak`` copy of *src* via a safe write; return the backup path.
+def backup_path(src: Path) -> tuple[Path, bool]:
+    """Create a ``.bak`` copy of *src* via a safe write; return (backup path, created).
 
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically
-    renamed over it. Preserves an existing .bak so repeated in-place runs never
-    overwrite the original uncleaned file, while still refusing symlinks.
+    renamed over it.
+
+    A pre-existing ``.bak`` from an earlier run is preserved, not overwritten
+    — the second run of an auto-fix hook (clean → commit-blocked → re-stage →
+    clean again) used to back up the first run's output over the original,
+    destroying the only pristine copy (#172). The returned tuple's second
+    element reports whether this call created the backup or kept an existing
+    one, so callers can tell the user.
     """
     bak = src.with_suffix(src.suffix + ".bak")
     if bak.is_symlink():
         eprint(f"cannot create backup {bak}: refusing to write through symlink: {bak}")
         raise SystemExit(2)
-    if bak.is_file():
-        return bak
+    if bak.exists():
+        return bak, False
     try:
         safe_write_bytes(bak, src.read_bytes())
     except OSError as e:
         eprint(f"cannot create backup {bak}: {e}")
         raise SystemExit(2) from None
-    return bak
+    return bak, True
 
 
 def subprocess_rlimits() -> None:
