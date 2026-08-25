@@ -32,9 +32,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import EXIT_PARTIAL, eprint, subprocess_creationflags
+from common import EXIT_PARTIAL, MAX_INPUT_BYTES, eprint, subprocess_creationflags
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
+
+
+def _file_digest(path: Path) -> bytes | None:
+    """Compute the SHA-256 digest of *path* incrementally in 64 KiB chunks."""
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.digest()
+    except OSError:
+        return None
 
 
 def _is_modifying_action(action: str) -> bool:
@@ -92,9 +104,13 @@ def _clean_one(path: Path) -> tuple[str, str]:
     *detail* explains a 'failed' status and is empty for every other status.
     """
     try:
-        before_digest = hashlib.sha256(path.read_bytes()).digest()
+        if path.stat().st_size > MAX_INPUT_BYTES:
+            eprint(f"skipping {path}: larger than {MAX_INPUT_BYTES} bytes")
+            return "skipped", ""
     except OSError:
-        before_digest = None
+        pass
+
+    before_digest = _file_digest(path)
 
     proc = subprocess.run(
         [sys.executable, str(CLEAN_FILE_PY), str(path), "--in-place", "--json"],
@@ -119,10 +135,7 @@ def _clean_one(path: Path) -> tuple[str, str]:
     except json.JSONDecodeError:
         return "failed", _failure_detail(proc, "clean_file.py wrote an unparsable report")
 
-    try:
-        after_digest = hashlib.sha256(path.read_bytes()).digest()
-    except OSError:
-        after_digest = None
+    after_digest = _file_digest(path)
 
     disk_changed = (
         before_digest is not None and after_digest is not None and before_digest != after_digest

@@ -221,6 +221,44 @@ def test_clean_staged_unknown_format_skipped(tmp_path, monkeypatch):
     assert f.read_bytes() == original
 
 
+def test_clean_staged_oversized_file_skipped_without_reading(tmp_path, monkeypatch, capsys):
+    """An oversized staged file is skipped without loading its entire contents into memory."""
+    f = tmp_path / "huge.bin"
+    f.touch()
+    real_stat = Path.stat
+
+    def fake_stat(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if self == f:
+            import os
+
+            return os.stat_result(
+                (
+                    st.st_mode,
+                    st.st_ino,
+                    st.st_dev,
+                    st.st_nlink,
+                    st.st_uid,
+                    st.st_gid,
+                    clean_staged.MAX_INPUT_BYTES + 1,
+                    st.st_atime,
+                    st.st_mtime,
+                    st.st_ctime,
+                )
+            )
+        return st
+
+    def forbidden_open(*args, **kwargs):
+        raise AssertionError("open() must not be called on oversized files")
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(Path, "open", forbidden_open)
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
+    assert clean_staged.main() == 0
+    err = capsys.readouterr().err
+    assert f"skipping {f}: larger than {clean_staged.MAX_INPUT_BYTES} bytes" in err
+
+
 # ---------------------------------------------------------------------------
 # A cleaner that could not run must not pass as "already clean" (issue #159).
 # These pin exit 3 == common.EXIT_PARTIAL: an incomplete run outranks the
