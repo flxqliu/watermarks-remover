@@ -15,9 +15,7 @@ import pytest
 def _png_chunk(typ: bytes, data: bytes) -> bytes:
     """Build a PNG chunk with length, type, payload, and CRC32."""
     body = typ + data
-    return (
-        struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
-    )
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
 
 
 def _minimal_png() -> bytes:
