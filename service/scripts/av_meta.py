@@ -234,11 +234,12 @@ def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
             hits = _contains_any(data, AI_META_HINTS)
             has_c2pa = _classify_c2pa(hits)
             findings = [
-                f"truncated ID3v2.{major} tag detected ({len(data)} bytes present, {total} declared) — metadata may be incomplete"
+                f"truncated ID3v2.{major} tag detected ({len(data)} bytes present, {total} declared) "
+                "— metadata may be incomplete"
             ]
             if hits:
                 findings.append(f"partial ID3v2.{major} tag markers: {', '.join(hits[:8])}")
-            return has_c2pa, True, findings
+            return has_c2pa, bool(hits), findings
 
     parsed = _parse_id3v2_frames(data)
     if parsed is None:

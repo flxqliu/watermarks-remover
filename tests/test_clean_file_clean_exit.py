@@ -72,6 +72,7 @@ def test_bak_not_overwritten_on_second_in_place_run(tmp_path: Path):
     [
         ("clean.png", _clean_png_bytes()),
         ("clean.jpg", _clean_jpeg_bytes()),
+        ("non_marker.jpg", b"\xff\xd8abc"),
         ("clean.pdf", _clean_pdf_bytes()),
         ("clean.mp4", _clean_mp4_bytes()),
     ],

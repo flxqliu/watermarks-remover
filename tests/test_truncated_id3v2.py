@@ -19,9 +19,22 @@ def _truncated_id3v2_mp3() -> bytes:
 
 def test_inspect_truncated_id3v2_reports_finding():
     data = _truncated_id3v2_mp3()
-    _has_c2pa, _has_ai, findings = av_meta._inspect_id3v2(data)
+    has_c2pa, has_ai, findings = av_meta._inspect_id3v2(data)
+    assert has_ai is True
+    assert has_c2pa is False
     assert len(findings) > 0
     assert any("truncated" in f.lower() and "id3" in f.lower() for f in findings)
+
+
+def test_inspect_truncated_id3v2_without_ai_markers_does_not_claim_ai():
+    # ID3v2.3 tag header: declared 500 bytes, only 30 bytes of non-AI audio data present
+    header = b"ID3\x03\x00\x00\x00\x00\x03\x74"
+    partial_payload = b"TIT2\x00\x00\x00\x0a\x00\x00\x00Track 01"
+    data = header + partial_payload
+    has_c2pa, has_ai, findings = av_meta._inspect_id3v2(data)
+    assert has_ai is False
+    assert has_c2pa is False
+    assert any("truncated" in f.lower() for f in findings)
 
 
 def test_strip_truncated_id3v2_removes_truncated_tag():

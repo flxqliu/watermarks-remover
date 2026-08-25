@@ -155,7 +155,12 @@ def main() -> int:
         except Exception as e:
             eprint(f"error: {e}")
             return 1
-        result = {"kind": "image", "changed": result_has_changes(result), **result}
+        is_changed = (
+            (src.read_bytes() != dest.read_bytes())
+            if (src.is_file() and dest.is_file())
+            else result_has_changes(result)
+        )
+        result = {"kind": "image", "changed": is_changed, **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
         if args.json:
             print(json.dumps(result, indent=2))
@@ -180,7 +185,12 @@ def main() -> int:
         except Exception as e:
             eprint(f"error: {e}")
             return 1
-        result = {"kind": "av", "changed": result_has_changes(result), **result}
+        is_changed = (
+            (src.read_bytes() != dest.read_bytes())
+            if (src.is_file() and dest.is_file())
+            else result_has_changes(result)
+        )
+        result = {"kind": "av", "changed": is_changed, **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
         if args.json:
             print(json.dumps(result, indent=2))
@@ -200,7 +210,12 @@ def main() -> int:
     except Exception as e:
         eprint(f"error: {e}")
         return 1
-    result = {"kind": "container", "changed": result_has_changes(result), **result}
+    is_changed = (
+        (src.read_bytes() != dest.read_bytes())
+        if (src.is_file() and dest.is_file())
+        else result_has_changes(result)
+    )
+    result = {"kind": "container", "changed": is_changed, **result}
     residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
     degraded = bool(result.get("meta", {}).get("degraded"))
     if args.json:

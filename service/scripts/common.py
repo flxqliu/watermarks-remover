@@ -292,6 +292,7 @@ def is_mutating_action(action: str) -> bool:
         or "failed" in action_lower
         or "left unchanged" in action_lower
         or "kept" in action_lower
+        or "copied remainder" in action_lower
     ):
         return False
     return not action_lower.startswith("layer a text: removed=0 replaced=0")
@@ -299,9 +300,21 @@ def is_mutating_action(action: str) -> bool:
 
 def result_has_changes(result: dict[str, Any]) -> bool:
     """True if a clean operation modified the content."""
+    if "changed" in result:
+        return bool(result["changed"])
     stats = result.get("stats")
     if stats is not None:
         return bool(stats.get("removed_count") or stats.get("replaced_count"))
+    inp = result.get("input")
+    out = result.get("output")
+    if inp and out:
+        p_in = Path(inp)
+        p_out = Path(out)
+        if p_in.is_file() and p_out.is_file():
+            try:
+                return p_in.read_bytes() != p_out.read_bytes()
+            except OSError:
+                pass
     actions = result.get("actions", [])
     return any(is_mutating_action(a) for a in actions)
 

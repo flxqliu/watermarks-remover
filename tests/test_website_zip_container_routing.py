@@ -69,3 +69,19 @@ def test_extensionless_epub_classified_as_epub():
         }
     )
     assert audit_website.guess_kind("https://example.com/file", epub_data, None) == "epub"
+
+
+def test_ambiguous_zip_with_lone_manifest_not_misrouted():
+    zip_data = _make_zip({"META-INF/manifest.xml": b"<manifest></manifest>"})
+    assert audit_website.guess_kind("https://example.com/file", zip_data, None) not in (
+        "odt",
+        "epub",
+    )
+
+
+def test_ambiguous_zip_with_lone_opf_not_misrouted():
+    zip_data = _make_zip({"package.opf": b"<package></package>"})
+    assert audit_website.guess_kind("https://example.com/file", zip_data, None) not in (
+        "odt",
+        "epub",
+    )
