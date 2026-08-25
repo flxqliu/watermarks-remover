@@ -1151,11 +1151,13 @@ make smoke                          # quick CLI smoke on fixtures
   function appends a "nothing was removed" filler action when it removed
   nothing, so an empty-vs-nonempty `actions` list could not tell "removed
   something" from "removed nothing", and the hook demanded a re-stage of every
-  byte-identical clean image/container forever. `_changed()` now decides a
-  non-text file changed by whether the cleaner actually wrote different bytes
-  (`bytes_in != bytes_out`), falling back to `actions` only for reports without
-  that byte count. A clean (byte-identical) file exits 0; a real strip still
-  exits 1 to request a re-stage.
+  byte-identical clean image/container forever. `_clean_one()` now compares
+  pre- and post-cleaning file digests on disk, and `_changed()` recognizes
+  active modification actions (such as dropping chunks or blanking XMP packets)
+  rather than treating filler actions as changes or relying solely on byte
+  count differences. A clean (byte-identical) file exits 0; a real strip (even
+  same-length, like blanked PDF XMP packets) still exits 1 to request a
+  re-stage.
 - **Strip reserved Default_Ignorable code points in Layer A**: `U+2065`, `U+FFF0`–`U+FFF8`, `U+E0000`, `U+E0080`–`U+E00FF`, and `U+E01F0`–`U+E0FFF` are unassigned code points carrying `Other_Default_Ignorable_Code_Point=Yes`, so conformant renderers display them invisibly, normalisation preserves them, and category-based (`Cf`) scrubbing never sees them: ideal covert carriers with no legitimate use in interchange text. Layer A now strips them and inspect reports them under the new `reserved_ignorable` kind. Applied to both the service engine and the vendored lightweight-skill copy
 - **Fix Layer A missing three invisible Default_Ignorable carriers**: `U+180F` (Mongolian free variation selector-4, added in Unicode 14), `U+3164` (Hangul filler), and `U+FFA0` (halfwidth Hangul filler) are blank-rendering Default_Ignorable code points, but their Unicode categories (`Mn`/`Lo`) meant the `Cf` catch-all never saw them and they were absent from the strip set — so both `inspect_text` and `clean_text` passed them through untouched even between plain ASCII. They are now stripped and flagged like their already-covered siblings (`U+180B`–`U+180D`, `U+115F`/`U+1160`), with the same in-context preservation: `U+180F` is kept after a Mongolian letter exactly like FVS1–3, and `U+3164`/`U+FFA0` are kept after a Hangul jamo of their own presentation form (compatibility jamo `U+3131`–`U+318E`, halfwidth jamo `U+FFA1`–`U+FFDC`) exactly like the conjoining fillers, so partial-syllable text is not corrupted. Applied to both the service engine and the vendored lightweight-skill copy
 - **Strip Unicode noncharacters in Layer A**: the 66 noncharacters (`U+FDD0`–`U+FDEF` plus `U+FFFE`/`U+FFFF` at the end of every plane) are permanently reserved for internal use and prohibited in interchange text, render as nothing or tofu, and survive normalisation, yet both `inspect_text` and `clean_text` passed them through untouched: a ready-made covert channel. Layer A now strips them and inspect reports them under the new `noncharacter` kind. Unlike other reserved ranges they can never be assigned, so stripping carries no future-Unicode risk. Applied to both the service engine and the vendored lightweight-skill copy
