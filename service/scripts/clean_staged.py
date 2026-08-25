@@ -40,6 +40,19 @@ def _changed(result: dict) -> bool:
     stats = result.get("stats")
     if stats is not None:
         return bool(stats.get("removed_count") or stats.get("replaced_count"))
+    # The image / container / audio cleaners report bytes_in and bytes_out
+    # rather than stats. Whether the file on disk actually changed is "did a
+    # strip_* write different bytes", which is exactly the byte comparison: a
+    # cleaner that removed nothing rewrites identical bytes, while any real
+    # removal changes them. Reading `actions` for this decision is wrong —
+    # every strip_*/clean_* appends a "nothing was removed" filler action when
+    # it removed nothing, so a non-empty list does not mean the file moved
+    # (issue #173), and treating it as changed made the clean pre-commit hook
+    # demand a re-stage of every clean image/container forever.
+    if "bytes_in" in result and "bytes_out" in result:
+        return result["bytes_in"] != result["bytes_out"]
+    # Reports that carry no byte counts (e.g. a mocked/stale shape) fall back
+    # to the action list so an explicit removal still reads as a change.
     return bool(result.get("actions"))
 
 

@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 import json
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
+
+
+def _minimal_png() -> bytes:
+    """A real, clean 1x1 PNG (stdlib only, deterministic)."""
+
+    def chunk(typ: bytes, data: bytes) -> bytes:
+        body = typ + data
+        return (
+            struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00\x00\x00\x00")
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
@@ -79,6 +96,53 @@ def test_clean_staged_already_clean_file_exits_0_unchanged(tmp_path, monkeypatch
     monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
     assert clean_staged.main() == 0
     assert f.read_text(encoding="utf-8") == original
+
+
+def test_clean_staged_clean_image_report_exits_0(tmp_path, monkeypatch, capsys):
+    # Issue #173: every strip_* appends a "nothing was removed" filler action,
+    # so a non-empty actions list used to read as "changed" even when the file
+    # on disk was byte-identical. A clean image must not ask for a re-stage.
+    f = _staged_file(tmp_path)
+    report = {
+        "kind": "image",
+        "actions": ["no PNG metadata chunks removed (already clean or none matched)"],
+        "bytes_in": 69,
+        "bytes_out": 69,
+        "still_has_c2pa": False,
+        "still_has_ai_metadata": False,
+    }
+    _fake_clean_file(monkeypatch, 0, stdout=json.dumps(report))
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
+    assert clean_staged.main() == 0
+    assert "cleaned 1 file(s)" not in capsys.readouterr().err
+
+
+def test_clean_staged_modified_image_report_exits_1(tmp_path, monkeypatch, capsys):
+    # The other side of the byte comparison: a strip that really changed the
+    # file still asks the developer to re-stage it.
+    f = _staged_file(tmp_path)
+    report = {
+        "kind": "image",
+        "actions": ["strip PNG c2pa chunk (jumb, 1234 bytes)"],
+        "bytes_in": 1400,
+        "bytes_out": 181,
+        "still_has_c2pa": False,
+        "still_has_ai_metadata": False,
+    }
+    _fake_clean_file(monkeypatch, 0, stdout=json.dumps(report))
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
+    assert clean_staged.main() == 1
+    assert "cleaned 1 file(s)" in capsys.readouterr().err
+
+
+def test_clean_staged_clean_image_end_to_end_exits_0(tmp_path, monkeypatch):
+    # No mocking: drive the real clean_file.py subprocess on a byte-identical
+    # clean PNG, mirroring the exact repro in the issue.
+    f = tmp_path / "clean.png"
+    f.write_bytes(_minimal_png())
+    monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
+    assert clean_staged.main() == 0
+    assert f.read_bytes() == _minimal_png()
 
 
 def test_clean_staged_unknown_format_skipped(tmp_path, monkeypatch):
