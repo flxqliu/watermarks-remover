@@ -106,8 +106,10 @@ pre-removal baseline, so compare rewrite rows against control.
 What the tier proves and what it cannot:
 
 - The Panoptes KGW reading is scoped to Panoptes' baked **demo key** — it
-  detects only watermarks made with that key, so it stays silent on this
-  MarkLLM-generated corpus (expect 0 positives; a positive would be a bug).
+  detects only watermarks made with that key, so no true matches are
+  expected on this MarkLLM-generated corpus. A positive is not automatically
+  a benchmark bug: it warrants investigation (false positive, or the corpus
+  overlapping the demo key), not dismissal.
 - The calibrated **AI posterior** is the watermark-agnostic signal: a
   rewrite that clears the mark but leaves the posterior pinned near 1.0 has
   changed the mark, not the provenance signal.

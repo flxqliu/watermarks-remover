@@ -1184,10 +1184,12 @@ def render_markdown(
         if name == "panoptes":
             L.append(
                 "**Caveat:** the panoptes KGW reading is scoped to Panoptes' baked demo "
-                "key — it detects only watermarks made with that key, so it stays silent "
-                "on this MarkLLM-generated corpus (expect 0 positives). The AI posterior "
-                "is the watermark-agnostic signal: compare rewrite rows against the "
-                "control baseline to see whether removal still reads as machine-generated."
+                "key — it detects only watermarks made with that key, so no true matches "
+                "are expected on this MarkLLM-generated corpus; any positive warrants "
+                "investigation (false positive or key reuse), not an automatic benchmark "
+                "defect. The AI posterior is the watermark-agnostic signal: compare "
+                "rewrite rows against the control baseline to see whether removal still "
+                "reads as machine-generated."
             )
             L.append("")
     L.append("## Reproduction")

@@ -470,6 +470,71 @@ def test_panoptes_ctor_url_overrides_env(monkeypatch):
     assert det._base_url() == "http://example.invalid:9"  # trailing slash stripped
 
 
+def test_panoptes_zero_p_value_is_positive():
+    """A tested KGW p_value of 0.0 is a positive, not a missing value."""
+    payload = _panoptes_payload()
+    payload["watermarks"][0]["p_value"] = 0.0
+    srv, _ = _spin_panoptes(payload)
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is True
+    assert report["is_watermarked"] is True
+    assert report["kgw"]["p_value"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("summary", ["invalid"]), ("watermarks", 7)],
+)
+def test_panoptes_malformed_nested_fields_fail_soft(field, value):
+    payload = _panoptes_payload()
+    payload[field] = value
+    srv, _ = _spin_panoptes(payload)
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is False
+    assert report["error"].startswith("bad panoptes response")
+
+
+def test_panoptes_non_numeric_kgw_field_fails_soft():
+    payload = _panoptes_payload()
+    payload["watermarks"][0]["p_value"] = "high"
+    srv, _ = _spin_panoptes(payload)
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is False
+    assert "non-numeric" in report["error"]
+
+
+@pytest.mark.parametrize("bad", ["-1", "nan", "inf"])
+def test_panoptes_invalid_env_timeout_falls_back(monkeypatch, bad):
+    """Garbage PANOPTES_TIMEOUT values fall back to the default, never reach urllib."""
+    monkeypatch.setenv("PANOPTES_TIMEOUT", bad)
+    srv, _ = _spin_panoptes(_panoptes_payload())
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is True
+
+
+def test_panoptes_invalid_ctor_timeout_fails_soft():
+    det = text_detectors.PanoptesTextDetector(url="http://127.0.0.1:1", timeout=-1.0)
+    report = det.detect("x")
+    assert report["available"] is False
+    assert "invalid panoptes timeout" in report["error"]
+
+
 def test_cross_detectors_registry():
     assert sorted(text_detectors.CROSS_DETECTORS) == ["panoptes"]
     assert text_detectors.CROSS_DETECTORS["panoptes"]().name == "panoptes"

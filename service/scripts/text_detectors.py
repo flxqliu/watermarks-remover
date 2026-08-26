@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -67,9 +68,11 @@ class TextDetector(Protocol):
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.environ.get(name, str(default)))
+        value = float(os.environ.get(name, str(default)))
     except ValueError:
         return default
+    # urllib raises ValueError on non-finite or negative timeouts; fall back.
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def _worker_port() -> int | None:
@@ -442,6 +445,9 @@ class PanoptesTextDetector:
             if self._timeout is not None
             else _env_float("PANOPTES_TIMEOUT", PANOPTES_DEFAULT_TIMEOUT)
         )
+        if not math.isfinite(timeout) or timeout <= 0:
+            report["error"] = f"invalid panoptes timeout: {timeout!r}"
+            return report
         body = json.dumps({"text": text, "content_type": "prose"}).encode("utf-8")
         # S310: URL scheme is restricted to http/https in _base_url above.
         req = urllib.request.Request(  # noqa: S310
@@ -469,26 +475,34 @@ class PanoptesTextDetector:
             report["error"] = "bad panoptes response"
             return report
 
-        summary = data.get("summary") or {}
+        summary = data.get("summary")
+        watermarks = data.get("watermarks")
+        if summary is not None and not isinstance(summary, dict):
+            report["error"] = "bad panoptes response: summary is not an object"
+            return report
+        if watermarks is not None and not isinstance(watermarks, list):
+            report["error"] = "bad panoptes response: watermarks is not a list"
+            return report
         kgw = next(
-            (
-                w
-                for w in (data.get("watermarks") or [])
-                if isinstance(w, dict) and w.get("scheme") == "kgw-v1"
-            ),
+            (w for w in (watermarks or []) if isinstance(w, dict) and w.get("scheme") == "kgw-v1"),
             None,
         )
         kgw_tested = kgw is not None and kgw.get("status") == "tested"
+        z = kgw.get("z") if kgw_tested else None
+        p_value = kgw.get("p_value") if kgw_tested else None
+        if any(v is not None and not isinstance(v, (int, float)) for v in (z, p_value)):
+            report["error"] = "bad panoptes response: non-numeric kgw field"
+            return report
         report["available"] = True
-        report["is_watermarked"] = bool((kgw.get("p_value") or 1.0) < 0.05) if kgw_tested else None
-        report["score"] = kgw.get("z") if kgw_tested else None
+        report["is_watermarked"] = (p_value is not None and p_value < 0.05) if kgw_tested else None
+        report["score"] = z
         report["kgw"] = (
             {"status": kgw.get("status"), "z": kgw.get("z"), "p_value": kgw.get("p_value")}
             if kgw is not None
             else None
         )
-        report["ai_generation"] = summary.get("ai_generation")
-        report["ai_participation"] = summary.get("ai_participation")
+        report["ai_generation"] = (summary or {}).get("ai_generation")
+        report["ai_participation"] = (summary or {}).get("ai_participation")
         report["note"] = (
             "Independent Panoptes analysis. KGW is scoped to Panoptes' baked demo "
             "key — it detects only watermarks made with that key, not third-party "
