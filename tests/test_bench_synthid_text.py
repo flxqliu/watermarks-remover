@@ -747,6 +747,26 @@ def test_semantic_embedder_graceful_when_package_missing(monkeypatch):
     assert emb.score("a", "b") is None
 
 
+def test_semantic_embedder_failsoft_after_encode_failure():
+    class _FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def encode(self, texts, normalize_embeddings=True):
+            self.calls += 1
+            raise RuntimeError("encode exploded")
+
+    emb = bench.SemanticEmbedder("fake-model")
+    emb._model = _FakeModel()
+    emb._util = type("_U", (), {"cos_sim": lambda self, a, b: None})()
+    assert emb.score("orig", "cand") is None
+    assert emb.available() is False
+    # fail-soft: the backend is disabled after a failed encode, so a second
+    # score returns None WITHOUT re-encoding, and available() stays False.
+    assert emb.score("orig", "cand") is None
+    assert emb._model.calls == 1
+
+
 def test_quality_includes_semantic_divergence():
     class _FakeSem:
         def score(self, original, candidate):
@@ -834,6 +854,50 @@ def test_minimal_search_escalates_until_cleared(tmp_path, monkeypatch):
     assert row["semantic_divergence"] == 0.25
     # one attempt per level, escalating 0.1 -> 0.2 -> 0.3
     assert levels_called == [0.1, 0.2, 0.3]
+
+
+def test_minimal_search_always_evaluates_max_level(tmp_path, monkeypatch):
+    b, _ = _make_bench(
+        tmp_path,
+        monkeypatch,
+        docs=1,
+        mode="minimal",
+        level_attempts=1,
+        rewrite_level_start=0.1,
+        rewrite_level_step=0.2,
+        rewrite_level_max=1.0,
+    )
+    samples = b.generate_samples(tmp_path / "work")
+    levels_called = []
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        levels_called.append(rewrite_level)
+        # clears only at the configured maximum
+        return f"{text}|{rewrite_level} rewritten", _rewrite_stats(
+            cleared=(rewrite_level == 1.0), attempts_made=1
+        )
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    monkeypatch.setattr(b.semantic, "score", lambda o, c: 0.25)
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    assert row["cleared"] is True
+    assert row["level"] == 1.0
+    # 0.1, 0.3, 0.5, 0.7, 0.9 then the clamped maximum 1.0
+    assert levels_called == [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+
+
+def test_minimal_search_rejects_bad_level_config(tmp_path, monkeypatch):
+    for overrides, err in [
+        ({"rewrite_level_step": 0.0}, "--rewrite-level-step must be > 0"),
+        ({"rewrite_level_start": 0.0}, "must be in (0,1]"),
+        ({"rewrite_level_max": 1.5}, "must be in (0,1]"),
+    ]:
+        b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", **overrides)
+        samples = b.generate_samples(tmp_path / "work")
+        with pytest.raises(SystemExit) as e:
+            b.minimal_search(samples, tmp_path / "work")
+        assert err in str(e.value)
 
 
 def test_minimal_search_picks_min_semantic_among_clearing(tmp_path, monkeypatch):
@@ -928,7 +992,9 @@ def test_aggregate_minimal_means_and_usage():
     assert agg["n_cleared"] == 2
     assert agg["clear_rate"] == pytest.approx(2 / 3, rel=1e-4)
     assert agg["mean_min_level"] == pytest.approx(0.4, rel=1e-4)
-    assert agg["median_min_level"] == pytest.approx(0.6, rel=1e-4)
+    assert agg["median_min_level"] == pytest.approx(
+        0.4, rel=1e-4
+    )  # conventional median of {0.2, 0.6}
     assert agg["mean_min_semantic_divergence"] == pytest.approx(0.25, rel=1e-4)
     assert agg["mean_min_lexical_divergence"] == pytest.approx(0.4, rel=1e-4)
     assert agg["mean_min_margin"] == pytest.approx(1.2, rel=1e-4)  # (0.9 + 1.5) / 2

@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import json
 import os
 import queue
 import re
+import statistics
 import subprocess
 import sys
 import threading
@@ -474,10 +476,12 @@ class SemanticEmbedder:
         self._failed: str | None = None
 
     def _load(self):
-        if self._model is not None:
-            return self._model
+        # Fail-soft: a prior load OR encode failure disables the backend so we
+        # stop retrying a failing model/encode instead of looping on it.
         if self._failed is not None:
             return None
+        if self._model is not None:
+            return self._model
         try:
             from sentence_transformers import SentenceTransformer, util
 
@@ -1086,13 +1090,24 @@ class Benchmark:
         lexical/semantic divergence of the chosen rewrite.
         """
         a = self.args
+        # Validate against the (0,1] rewrite-level contract before building the
+        # list: a non-positive step would loop forever, and a level outside
+        # (0,1] would make every rewrite_text.py call fail at runtime.
+        if a.rewrite_level_step <= 0:
+            raise SystemExit("error: --rewrite-level-step must be > 0")
+        if not (0 < a.rewrite_level_start <= 1) or not (0 < a.rewrite_level_max <= 1):
+            raise SystemExit(
+                "error: --rewrite-level-start and --rewrite-level-max must be in (0,1]"
+            )
         levels: list[float] = []
         lvl = a.rewrite_level_start
         while lvl <= a.rewrite_level_max + 1e-9:
             levels.append(round(lvl, 6))
             lvl += a.rewrite_level_step
-        if not levels:
-            raise SystemExit("error: --rewrite-level-max must be >= --rewrite-level-start")
+        # Always evaluate the configured maximum: a step can land just short of
+        # it (e.g. start .1, step .2, max 1.0 -> .1 ... .9, then 1.1 > max).
+        if levels and levels[-1] < a.rewrite_level_max - 1e-9:
+            levels.append(round(a.rewrite_level_max, 6))
 
         rows: list[dict[str, Any]] = []
         for sample in samples:
@@ -1104,8 +1119,8 @@ class Benchmark:
                         "variant": "minimal",
                         "kind": "minimal",
                         "cleared": None,
-                        "before_pos": _detect_positive(sample["before"]),
-                        "score_before": _score_of(sample["before"]),
+                        "before_pos": _detect_positive(sample.get("before")),
+                        "score_before": _score_of(sample.get("before")),
                         "level": None,
                         "lexical_divergence": None,
                         "semantic_divergence": None,
@@ -1329,9 +1344,9 @@ def aggregate_minimal(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "n_cleared": len(cleared),
         "clear_rate": round(len(cleared) / n, 4) if n else None,
         "mean_min_level": round(_mean(levels), 4) if levels else None,
-        "median_min_level": round(sorted(levels)[len(levels) // 2], 4) if levels else None,
+        "median_min_level": round(statistics.median(levels), 4) if levels else None,
         "mean_min_semantic_divergence": round(_mean(sems), 4) if sems else None,
-        "median_min_semantic_divergence": round(sorted(sems)[len(sems) // 2], 4) if sems else None,
+        "median_min_semantic_divergence": round(statistics.median(sems), 4) if sems else None,
         "mean_min_lexical_divergence": round(_mean(lexes), 4) if lexes else None,
         "mean_min_margin": round(_mean(margins), 4) if margins else None,
         "level_usage": list(usage.items()),
@@ -1470,8 +1485,9 @@ def render_markdown_minimal(
     L.append("")
     L.append(
         "For each watermarked sample the benchmark starts at the lowest rewrite "
-        "level and raises it by 0.1 per loop until a rewrite is no longer "
-        "watermarked (same-config MarkLLM detection). The chosen rewrite is the "
+        f"level and raises it by {config['rewrite_level_step']} per loop until a "
+        "rewrite is no longer watermarked (same-config MarkLLM detection). "
+        "The chosen rewrite is the "
         "one with the smallest semantic divergence among the clearing attempts at "
         "that level; that level's value and the resulting lexical/semantic "
         "divergence are recorded. Samples that never clear are excluded from the "
@@ -1528,35 +1544,66 @@ def render_markdown_minimal(
     return "\n".join(L) + "\n"
 
 
+def _csv_cell(value: Any) -> Any:
+    """Render a CSV cell: None -> empty field, True/False -> 1/0, else as-is.
+
+    Prevents ``str(None)`` (the literal text "None") from leaking into numeric
+    columns and lets ``csv.writer`` escape any commas in the notes field.
+    """
+    if value is None:
+        return ""
+    if value is True:
+        return 1
+    if value is False:
+        return 0
+    return value
+
+
 def _minimal_csv(rows: list[dict[str, Any]]) -> list[str]:
-    lines = [
-        "doc,seed,variant,kind,cleared,before_pos,score_before,level,margin,score_after,"
-        "lexical_divergence,semantic_divergence,attempts,seconds,notes"
-    ]
+    import io
+
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(
+        [
+            "doc",
+            "seed",
+            "variant",
+            "kind",
+            "cleared",
+            "before_pos",
+            "score_before",
+            "level",
+            "margin",
+            "score_after",
+            "lexical_divergence",
+            "semantic_divergence",
+            "attempts",
+            "seconds",
+            "notes",
+        ]
+    )
     for r in rows:
-        lines.append(
-            ",".join(
-                str(v)
-                for v in (
-                    r["doc"],
-                    r["seed"],
-                    "minimal",
-                    "minimal",
-                    "" if r.get("cleared") is None else (1 if r["cleared"] else 0),
-                    1 if r.get("before_pos") else 0,
-                    r.get("score_before", ""),
-                    r.get("level", ""),
-                    r.get("margin", ""),
-                    r.get("score_after", ""),
-                    r.get("lexical_divergence", ""),
-                    r.get("semantic_divergence", ""),
-                    r.get("attempts", ""),
-                    r.get("seconds", ""),
-                    "; ".join(str(n) for n in r.get("notes") or []),
-                )
-            )
+        w.writerow(
+            [
+                r["doc"],
+                r["seed"],
+                "minimal",
+                "minimal",
+                _csv_cell(r.get("cleared")),
+                1 if r.get("before_pos") else 0,
+                _csv_cell(r.get("score_before")),
+                _csv_cell(r.get("level")),
+                _csv_cell(r.get("margin")),
+                _csv_cell(r.get("score_after")),
+                _csv_cell(r.get("lexical_divergence")),
+                _csv_cell(r.get("semantic_divergence")),
+                _csv_cell(r.get("attempts")),
+                _csv_cell(r.get("seconds")),
+                "; ".join(str(n) for n in r.get("notes") or []),
+            ]
         )
-    return lines
+    return out.getvalue().rstrip("\n").splitlines()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1819,11 +1866,38 @@ def main() -> int:
         agg = aggregate(rows, bench.variants)
 
         report = render_markdown(config, samples, rows, agg)
-        csv_lines = [
-            "doc,seed,variant,kind,attempts,evaluator,passed,before_pos,after_pos,cleared,"
-            "score_before,score_after,margin,score_delta,lexical_divergence,semantic_divergence,"
-            "length_ratio,numbers_preserved,urls_preserved,tokens_in,tokens_out,seconds,usd,notes"
-        ]
+        import io
+
+        _csv_buf = io.StringIO()
+        _csv_w = csv.writer(_csv_buf)
+        _csv_w.writerow(
+            [
+                "doc",
+                "seed",
+                "variant",
+                "kind",
+                "attempts",
+                "evaluator",
+                "passed",
+                "before_pos",
+                "after_pos",
+                "cleared",
+                "score_before",
+                "score_after",
+                "margin",
+                "score_delta",
+                "lexical_divergence",
+                "semantic_divergence",
+                "length_ratio",
+                "numbers_preserved",
+                "urls_preserved",
+                "tokens_in",
+                "tokens_out",
+                "seconds",
+                "usd",
+                "notes",
+            ]
+        )
         for r in rows:
             q = r.get("quality") or {}
             delta = (
@@ -1831,37 +1905,35 @@ def main() -> int:
                 if r.get("score_before") is not None and r.get("score_after") is not None
                 else ""
             )
-            csv_lines.append(
-                ",".join(
-                    str(v)
-                    for v in (
-                        r["doc"],
-                        r["seed"],
-                        r["variant"],
-                        r.get("kind", ""),
-                        r.get("attempts", ""),
-                        r.get("evaluator", ""),
-                        "" if r.get("passed") is None else (1 if r["passed"] else 0),
-                        1 if r.get("before_pos") else 0,
-                        1 if r.get("after_pos") else 0,
-                        "" if r.get("cleared") is None else (1 if r["cleared"] else 0),
-                        r.get("score_before", ""),
-                        r.get("score_after", ""),
-                        r.get("margin", ""),
-                        delta,
-                        q.get("lexical_divergence", ""),
-                        q.get("semantic_divergence", ""),
-                        q.get("length_ratio", ""),
-                        q.get("numbers_preserved", ""),
-                        q.get("urls_preserved", ""),
-                        q.get("tokens_in", ""),
-                        q.get("tokens_out", ""),
-                        r.get("seconds", ""),
-                        round(r.get("usd") or 0.0, 6),
-                        "; ".join(str(n) for n in r.get("notes") or []),
-                    )
-                )
+            _csv_w.writerow(
+                [
+                    r["doc"],
+                    r["seed"],
+                    r["variant"],
+                    r.get("kind", ""),
+                    _csv_cell(r.get("attempts")),
+                    r.get("evaluator", ""),
+                    _csv_cell(r.get("passed")),
+                    1 if r.get("before_pos") else 0,
+                    1 if r.get("after_pos") else 0,
+                    _csv_cell(r.get("cleared")),
+                    _csv_cell(r.get("score_before")),
+                    _csv_cell(r.get("score_after")),
+                    _csv_cell(r.get("margin")),
+                    _csv_cell(delta),
+                    _csv_cell(q.get("lexical_divergence")),
+                    _csv_cell(q.get("semantic_divergence")),
+                    _csv_cell(q.get("length_ratio")),
+                    _csv_cell(q.get("numbers_preserved")),
+                    _csv_cell(q.get("urls_preserved")),
+                    _csv_cell(q.get("tokens_in")),
+                    _csv_cell(q.get("tokens_out")),
+                    _csv_cell(r.get("seconds")),
+                    round(r.get("usd") or 0.0, 6),
+                    "; ".join(str(n) for n in r.get("notes") or []),
+                ]
             )
+        csv_lines = _csv_buf.getvalue().rstrip("\n").splitlines()
 
     (out_dir / "report.md").write_text(report, encoding="utf-8")
     (out_dir / "results.json").write_text(
