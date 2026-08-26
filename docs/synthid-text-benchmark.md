@@ -115,6 +115,40 @@ What the tier proves and what it cannot:
   Panoptes response is recorded per row (`available: false` + reason) and
   never fails the run. `PANOPTES_TIMEOUT` overrides the 30s default.
 
+## Fixture packs (--fixtures)
+
+`--fixtures <pack-dir>` replaces MarkLLM generation entirely with a pinned,
+hash-verified corpus — a `panoptes-watermark-fixtures-v1` pack as exported by
+`python -m bench export-watermark-corpus` in the Panoptes repo. The pack
+carries three families with **measured** per-sample expectations:
+
+- `kgw` — KGW green-list generations (gpt2, Panoptes' demo key)
+- `unicode` — the same passages with a zero-width signature embedded
+- `control` — unwatermarked generations
+
+```bash
+PANOPTES_API_URL=http://127.0.0.1:8000 \
+python3 service/scripts/bench_synthid_text.py --fixtures /path/to/pack --out-dir bench-fixtures
+```
+
+The mode runs control + layer-a rows only (Layer B rewrite evaluation is
+MarkLLM-entangled by design, and this mode skips MarkLLM — no `--markllm-dir`
+or `--rewrite-model` needed). Each sample is scored before and after the
+Layer A scrub: zero-width carriers with this repo's own `inspect_text`, the
+KGW demo-key family with the Panoptes workbench (`PANOPTES_API_URL`;
+skipped with a per-row note when unconfigured — never a hard failure).
+
+Before anything runs, the pack is validated: schema version, per-sample
+shape, `text_file` confinement, and a sha256 of every text file. A tampered
+or drifted pack is refused, not reported. The report's per-family retention
+table is compared against the manifest's expected pre-removal rates, and any
+control-row measurement that disagrees with the manifest is flagged as a
+warning — that means the pack or the local detectors drifted, and the numbers
+deserve scrutiny, not trust.
+
+A tiny 9-sample pack (3 per family) ships in `tests/fixtures/panoptes-pack/`
+for CI and for trying the mode without exporting anything.
+
 ## Running from Docker (compose)
 
 The `wr-markllm` service in compose.yaml can run the benchmark end-to-end

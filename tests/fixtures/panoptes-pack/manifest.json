@@ -1,0 +1,116 @@
+{
+  "created_utc": "2026-08-18T03:39:31Z",
+  "n_samples": 9,
+  "samples": [
+    {
+      "expected": {
+        "kgw_detectable": false,
+        "unicode_present": false
+      },
+      "family": "control",
+      "id": "control-000",
+      "key_id": null,
+      "model": "gpt2",
+      "sha256": "3121a5d2b2790c5968ac4e03866397dc346a1a609cfff17b0acd5519556cda73",
+      "text_file": "texts/control-000.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": false,
+        "unicode_present": false
+      },
+      "family": "control",
+      "id": "control-001",
+      "key_id": null,
+      "model": "gpt2",
+      "sha256": "eb2bbe8aa15b59701fcb75e0845cf5e895913a1a0c3a55d9089e396c681c7f7b",
+      "text_file": "texts/control-001.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": false,
+        "unicode_present": false
+      },
+      "family": "control",
+      "id": "control-002",
+      "key_id": null,
+      "model": "gpt2",
+      "sha256": "4e5562977a0e1dd7b4716ab7bdc8fc53f25c87d2df64be74bca4bff03d902aaf",
+      "text_file": "texts/control-002.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": true,
+        "unicode_present": false
+      },
+      "family": "kgw",
+      "id": "kgw-000",
+      "key_id": "panoptes-demo-key",
+      "model": "gpt2",
+      "sha256": "5ff488bb9021ed71653a67e3c13ff194c3af28e1951107d08c38078a3d4f703c",
+      "text_file": "texts/kgw-000.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": true,
+        "unicode_present": false
+      },
+      "family": "kgw",
+      "id": "kgw-001",
+      "key_id": "panoptes-demo-key",
+      "model": "gpt2",
+      "sha256": "eb59508feaa378431e2768ec94d69669ef3daead240c25c0e6fa06c67701a5a5",
+      "text_file": "texts/kgw-001.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": true,
+        "unicode_present": false
+      },
+      "family": "kgw",
+      "id": "kgw-002",
+      "key_id": "panoptes-demo-key",
+      "model": "gpt2",
+      "sha256": "596344c6f73523870bd88425af922af8acacc73e881bb288488e3410c1b5dda8",
+      "text_file": "texts/kgw-002.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": false,
+        "unicode_present": true
+      },
+      "family": "unicode",
+      "id": "unicode-000",
+      "key_id": null,
+      "model": "gpt2",
+      "sha256": "bd73659c0a66cb33b99b7ccdf92643928a6ccc91945bf347e4a9386f6f077fce",
+      "text_file": "texts/unicode-000.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": false,
+        "unicode_present": true
+      },
+      "family": "unicode",
+      "id": "unicode-001",
+      "key_id": null,
+      "model": "gpt2",
+      "sha256": "d441c4bdd16f63ea5ad025fd31ee34ddd9c8cf3124fa7da70dbb25a1c25598a8",
+      "text_file": "texts/unicode-001.txt"
+    },
+    {
+      "expected": {
+        "kgw_detectable": true,
+        "unicode_present": true
+      },
+      "family": "unicode",
+      "id": "unicode-002",
+      "key_id": null,
+      "model": "gpt2",
+      "sha256": "199a47a180f3816f5cd97ffcb5fc6d8d7f5f549fcdc4ef41219ac596dff988d8",
+      "text_file": "texts/unicode-002.txt"
+    }
+  ],
+  "schema": "panoptes-watermark-fixtures-v1",
+  "source_card_sha256": "9b658d3c629bba11336a46093ffc8a448796f90c1c074428e972c38308ec6349"
+}

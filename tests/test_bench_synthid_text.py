@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -61,6 +62,7 @@ def _args(**overrides):
         scheme="synthid",
         config=None,
         cross_detect=None,
+        fixtures=None,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -811,3 +813,191 @@ def test_run_cmd_no_rlimit_preexec(monkeypatch):
 
     b._run_cmd(["echo", "hi"], timeout=5)
     assert "preexec_fn" not in calls["kwargs"]
+
+
+# ---------------------------------------------------------------------------
+# Fixture-pack mode (--fixtures)
+# ---------------------------------------------------------------------------
+
+FIXTURE_PACK = ROOT / "tests" / "fixtures" / "panoptes-pack"
+# The pack's unicode family carries its mark in ZWSP/ZWNJ, one per word.
+_ZERO_WIDTH = chr(0x200B) + chr(0x200C)
+
+
+class _FakePackPanoptes:
+    """Panoptes double answering KGW from the pack's own expected blocks.
+
+    Keyed on exact pack text. clean_text is the identity on this pack's
+    control/kgw texts and maps unicode texts onto their control counterparts,
+    so layer-a rows resolve correctly too. A lookup miss raises — an unknown
+    text is a test bug, not a negative.
+    """
+
+    def __init__(self, pack_dir: Path):
+        manifest = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8"))
+        self._by_text = {}
+        for s in manifest["samples"]:
+            text = (pack_dir / s["text_file"]).read_text(encoding="utf-8")
+            self._by_text[text] = s["expected"]["kgw_detectable"]
+
+    def available(self):
+        return True
+
+    def detect(self, text):
+        if text not in self._by_text:
+            raise AssertionError(f"fake panoptes got unknown text: {text[:60]!r}")
+        positive = self._by_text[text]
+        return {
+            "detector": "panoptes",
+            "available": True,
+            "is_watermarked": positive,
+            "score": 3.5 if positive else 0.1,
+            "kgw": {
+                "status": "tested",
+                "z": 3.5 if positive else 0.1,
+                "p_value": 0.001 if positive else 0.45,
+            },
+            "ai_generation": 0.5,
+            "ai_participation": 0.55,
+            "note": "fake",
+        }
+
+
+def _run_fixtures(tmp_path, monkeypatch, panoptes, pack_dir=FIXTURE_PACK):
+    monkeypatch.setattr(bench, "_repo_commit", lambda: "abc123")
+    args = _args(fixtures=pack_dir, out_dir=tmp_path / "out", tag="ci-fixtures")
+    rc = bench.run_fixtures_mode(args, panoptes=panoptes)
+    return rc, args.out_dir
+
+
+def test_fixture_pack_committed_is_valid():
+    """The committed CI pack passes the same validation the bench applies."""
+    manifest = bench.load_fixture_pack(FIXTURE_PACK)
+    assert manifest["schema"] == "panoptes-watermark-fixtures-v1"
+    assert manifest["n_samples"] == 9
+    counts = {fam: 0 for fam in bench.FIXTURE_FAMILIES}
+    for s in manifest["samples"]:
+        counts[s["family"]] += 1
+    assert counts == {"control": 3, "kgw": 3, "unicode": 3}
+
+
+def test_fixtures_happy_path(tmp_path, monkeypatch):
+    rc, out_dir = _run_fixtures(tmp_path, monkeypatch, _FakePackPanoptes(FIXTURE_PACK))
+    assert rc == 0
+    data = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
+    rows = data["rows"]
+    assert len(rows) == 18  # 9 samples x (control, layer-a)
+    assert data["expectation_mismatches"] == []
+
+    def by(fam, var):
+        return [r for r in rows if r["family"] == fam and r["variant"] == var]
+
+    # Unicode family: mark present pre-removal, gone after Layer A.
+    assert all(r["unicode_present"] for r in by("unicode", "control"))
+    assert not any(r["unicode_present"] for r in by("unicode", "layer-a"))
+    # KGW family: demo-key mark survives the Unicode scrub.
+    assert all(r["kgw"]["is_watermarked"] for r in by("kgw", "control"))
+    assert all(r["kgw"]["is_watermarked"] for r in by("kgw", "layer-a"))
+    # Control family: no unicode mark before or after.
+    assert not any(r["unicode_present"] for r in by("control", "control"))
+    assert not any(r["unicode_present"] for r in by("control", "layer-a"))
+
+    summary = data["family_summary"]
+    assert summary["unicode/control"]["unicode_present_rate"] == 1.0
+    assert summary["unicode/layer-a"]["unicode_present_rate"] == 0.0
+    assert summary["kgw/control"]["kgw_positive_rate"] == 1.0
+    assert summary["kgw/layer-a"]["kgw_positive_rate"] == 1.0
+    assert summary["control/control"]["kgw_available"] == 3
+
+    report = (out_dir / "report.md").read_text(encoding="utf-8")
+    assert "## Per-family retention" in report
+    assert "All control-row measurements match the manifest's expected block." in report
+    assert "panoptes-watermark-fixtures-v1" in report
+
+    csv = (out_dir / "results.csv").read_text(encoding="utf-8")
+    assert csv.splitlines()[0].startswith("id,family,variant,unicode_present,")
+    unicode_layer_a = next(
+        line for line in csv.splitlines() if line.startswith("unicode-000,unicode,layer-a,")
+    )
+    # Mark scrubbed (0) though expected present (1); KGW expected absent (0) and
+    # the scrubbed text resolves to control-000, which the fake scores negative.
+    assert unicode_layer_a == "unicode-000,unicode,layer-a,0,1,0,1,0,0.1,0.45,0.5,"
+
+
+def test_fixtures_tampered_file_refused(tmp_path, monkeypatch, capsys):
+    pack_copy = tmp_path / "pack"
+    shutil.copytree(FIXTURE_PACK, pack_copy)
+    target = pack_copy / "texts" / "kgw-000.txt"
+    blob = bytearray(target.read_bytes())
+    blob[0] ^= 0x01
+    target.write_bytes(bytes(blob))
+    with pytest.raises(bench.FixturePackError, match="kgw-000"):
+        bench.load_fixture_pack(pack_copy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench_synthid_text.py", "--fixtures", str(pack_copy), "--out-dir", str(tmp_path / "o")],
+    )
+    assert bench.main() == 2
+    assert "sha256" in capsys.readouterr().err
+
+
+def test_fixtures_unknown_schema_rejected(tmp_path):
+    pack_copy = tmp_path / "pack"
+    shutil.copytree(FIXTURE_PACK, pack_copy)
+    manifest_path = pack_copy / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema"] = "panoptes-watermark-fixtures-v2"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(bench.FixturePackError, match="unsupported pack schema"):
+        bench.load_fixture_pack(pack_copy)
+
+
+def test_fixtures_kgw_skipped_with_note_when_unconfigured(tmp_path, monkeypatch):
+    monkeypatch.delenv("PANOPTES_API_URL", raising=False)
+    from text_detectors import PanoptesTextDetector
+
+    rc, out_dir = _run_fixtures(tmp_path, monkeypatch, PanoptesTextDetector())
+    assert rc == 0
+    data = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
+    assert all(r["kgw"] is None for r in data["rows"])
+    assert all(any("PANOPTES_API_URL" in n for n in r["notes"]) for r in data["rows"])
+    # The unicode family is fully measured without the workbench.
+    assert data["family_summary"]["unicode/layer-a"]["unicode_present_rate"] == 0.0
+    assert data["family_summary"]["kgw/control"]["kgw_positive_rate"] is None
+    report = (out_dir / "report.md").read_text(encoding="utf-8")
+    assert "KGW family not scored" in report
+    assert "n/a (detector offline)" in report
+
+
+def test_fixtures_mode_needs_no_markllm(tmp_path, monkeypatch):
+    """--fixtures dispatches before the MarkLLM/rewrite requirement checks."""
+    monkeypatch.delenv("PANOPTES_API_URL", raising=False)
+    monkeypatch.setattr(bench, "_repo_commit", lambda: "abc123")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_synthid_text.py",
+            "--fixtures",
+            str(FIXTURE_PACK),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--tag",
+            "ci-fixtures",
+        ],
+    )
+    assert bench.main() == 0
+    assert (tmp_path / "out" / "report.md").is_file()
+
+
+def test_fixtures_missing_pack_dir_is_usage_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench_synthid_text.py", "--fixtures", str(tmp_path / "nope"), "--out-dir", "x"],
+    )
+    assert bench.main() == 2
+    assert "no manifest.json" in capsys.readouterr().err
