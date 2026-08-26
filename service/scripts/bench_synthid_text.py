@@ -51,6 +51,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from common import eprint  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
+from text_detectors import CROSS_DETECTORS  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
 
 _RESOLVED_SCRIPT = Path(__file__).resolve()
@@ -624,6 +625,10 @@ class Benchmark:
         self.chars_per_token = args.chars_per_token
         self.scheme = args.scheme
         self.config = args.config
+        self.cross = [CROSS_DETECTORS[name]() for name in (args.cross_detect or [])]
+        for d in self.cross:
+            if not d.available():
+                eprint(f"cross-detector {d.name}: not reachable now; rows will record the reason")
         self.worker = None
         if not args.no_worker:
             try:
@@ -716,6 +721,10 @@ class Benchmark:
         )
 
     # -- phases ------------------------------------------------------------
+
+    def _cross(self, text: str) -> dict[str, Any]:
+        """Independent second-opinion detectors (--cross-detect); fail-soft."""
+        return {d.name: d.detect(text) for d in self.cross}
 
     def generate_samples(self, workdir: Path) -> list[dict[str, Any]]:
         """Generate and sanity-check watermarked/unwatermarked pairs."""
@@ -897,24 +906,23 @@ class Benchmark:
                         )
                         continue
                     after = self.detect(out_text)
-                    rows.append(
-                        {
-                            **base,
-                            "variant": variant,
-                            "kind": "restamp",
-                            "after_pos": _detect_positive(after),
-                            "score_after": _score_of(after),
-                            "cleared": None,
-                            "quality": _quality(
-                                sample["unwatermarked"], out_text, self.chars_per_token
-                            ),
-                            "notes": (
-                                ["re-stamped by rewrite backend"]
-                                if _detect_positive(after)
-                                else [],
-                            ),
-                        }
-                    )
+                    restamp_row: dict[str, Any] = {
+                        **base,
+                        "variant": variant,
+                        "kind": "restamp",
+                        "after_pos": _detect_positive(after),
+                        "score_after": _score_of(after),
+                        "cleared": None,
+                        "quality": _quality(
+                            sample["unwatermarked"], out_text, self.chars_per_token
+                        ),
+                        "notes": (
+                            ["re-stamped by rewrite backend"] if _detect_positive(after) else []
+                        ),
+                    }
+                    if self.cross:
+                        restamp_row["cross"] = self._cross(out_text)
+                    rows.append(restamp_row)
             cleared_count = sum(
                 1
                 for r in rows
@@ -964,6 +972,10 @@ class Benchmark:
             row["notes"].append("no removal applied (baseline)")
         elif kind == "layer-a":
             row["notes"].append("Layer A only; statistical marks are expected to survive")
+        if self.cross:
+            # Cross-detection runs on the row's output text; control rows
+            # (candidate == watermarked text) double as the pre-removal baseline.
+            row["cross"] = self._cross(candidate)
         return row
 
 
@@ -1042,6 +1054,20 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
                 {n for r in group for n in (r.get("notes") or []) if isinstance(n, str)}
             ),
         }
+        cross_names = sorted({n for r in group for n in (r.get("cross") or {})})
+        for name in cross_names:
+            reports = [(r.get("cross") or {}).get(name) or {} for r in group]
+            avail = [rep for rep in reports if rep.get("available")]
+            ai = [
+                rep["ai_generation"]
+                for rep in avail
+                if isinstance(rep.get("ai_generation"), (int, float))
+            ]
+            entries[f"cross_{name}"] = {
+                "n_available": len(avail),
+                "kgw_positive": sum(1 for rep in avail if rep.get("is_watermarked")),
+                "mean_ai_generation": round(_mean(ai), 4) if ai else None,
+            }
         out[variant] = entries
     return out
 
@@ -1134,6 +1160,35 @@ def render_markdown(
     else:
         L.append("- Re-stamp control: not run (pass --restamp-control)")
     L.append("")
+    cross_names = sorted({n for r in rows for n in (r.get("cross") or {})})
+    for name in cross_names:
+        L.append(f"## Cross-detector second opinion: {name}")
+        L.append("")
+        L.append(
+            "An independent detector (--cross-detect) scored every row's output "
+            "text; control rows (no removal) double as the pre-removal baseline."
+        )
+        L.append("")
+        L.append("| Variant | n | available | kgw+ (demo key) | AI posterior μ |")
+        L.append("| --- | ---: | ---: | ---: | ---: |")
+        for variant, a in agg.items():
+            c = a.get(f"cross_{name}")
+            if not c:
+                continue
+            L.append(
+                f"| {variant} | {a['n']} | {c['n_available']} | "
+                f"{c['kgw_positive']} | {_fmt(c['mean_ai_generation'])} |"
+            )
+        L.append("")
+        if name == "panoptes":
+            L.append(
+                "**Caveat:** the panoptes KGW reading is scoped to Panoptes' baked demo "
+                "key — it detects only watermarks made with that key, so it stays silent "
+                "on this MarkLLM-generated corpus (expect 0 positives). The AI posterior "
+                "is the watermark-agnostic signal: compare rewrite rows against the "
+                "control baseline to see whether removal still reads as machine-generated."
+            )
+            L.append("")
     L.append("## Reproduction")
     L.append("")
     L.append("    " + config["command"])
@@ -1175,6 +1230,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--restamp-control", action="store_true", help="Also rewrite the unwatermarked control"
+    )
+    p.add_argument(
+        "--cross-detect",
+        action="append",
+        choices=sorted(CROSS_DETECTORS),
+        default=None,
+        metavar="DETECTOR",
+        help="Also score every row's output text with an independent detector "
+        f"({', '.join(sorted(CROSS_DETECTORS))}); repeatable. panoptes needs "
+        "PANOPTES_API_URL (e.g. http://127.0.0.1:8000 from `panoptes up`). "
+        "Control rows double as the pre-removal baseline.",
     )
     p.add_argument("--out-dir", type=Path, default=Path("bench-synthid-text-results"))
     p.add_argument("--tag", default="", help="Short label for the report")
@@ -1282,6 +1348,7 @@ def main() -> int:
         "rewrite_temperature": args.rewrite_temperature,
         "rewrite_loops": args.rewrite_loops,
         "restamp_control": args.restamp_control,
+        "cross_detect": args.cross_detect or [],
         "chars_per_token": args.chars_per_token,
         "cost_per_mtok_in": args.cost_per_mtok_in,
         "cost_per_mtok_out": args.cost_per_mtok_out,
@@ -1301,6 +1368,7 @@ def main() -> int:
                 f"--rewrite-temperature {args.rewrite_temperature}",
                 f"--rewrite-loops {args.rewrite_loops}",
                 *(["--restamp-control"] if args.restamp_control else []),
+                *[f"--cross-detect {name}" for name in (args.cross_detect or [])],
                 *(["--rewrite-allow-remote"] if args.rewrite_allow_remote else []),
                 f"--out-dir {args.out_dir}",
                 f"--tag {tag}",
@@ -1332,11 +1400,15 @@ def main() -> int:
     agg = aggregate(rows, bench.variants)
 
     report = render_markdown(config, samples, rows, agg)
-    csv_lines = [
+    cross_names = [d.name for d in bench.cross]
+    csv_header = (
         "doc,seed,variant,kind,attempts,evaluator,passed,before_pos,after_pos,cleared,"
         "score_before,score_after,score_delta,lexical_divergence,length_ratio,"
         "numbers_preserved,urls_preserved,tokens_in,tokens_out,seconds,usd,notes"
-    ]
+    )
+    for name in cross_names:
+        csv_header += f",cross_{name}_pos,cross_{name}_score,cross_{name}_ai"
+    csv_lines = [csv_header]
     for r in rows:
         q = r.get("quality") or {}
         delta = (
@@ -1344,6 +1416,17 @@ def main() -> int:
             if r.get("score_before") is not None and r.get("score_after") is not None
             else ""
         )
+        cross_cells: list[Any] = []
+        for name in cross_names:
+            rep = (r.get("cross") or {}).get(name) or {}
+            pos = rep.get("is_watermarked")
+            score = rep.get("score")
+            ai = rep.get("ai_generation")
+            cross_cells += [
+                "" if pos is None else (1 if pos else 0),
+                "" if score is None else score,
+                "" if ai is None else ai,
+            ]
         csv_lines.append(
             ",".join(
                 str(v)
@@ -1370,6 +1453,7 @@ def main() -> int:
                     r.get("seconds", ""),
                     round(r.get("usd") or 0.0, 6),
                     "; ".join(str(n) for n in r.get("notes") or []),
+                    *cross_cells,
                 )
             )
         )

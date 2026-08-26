@@ -24,6 +24,10 @@ Detectors:
 - claude-text — placeholder for Anthropic's announced text-watermark
   detection API. Reports unavailable until a public endpoint exists; the
   interface it must implement is already defined here.
+- panoptes — independent second opinion from a Panoptes workbench over
+  HTTP, activated by PANOPTES_API_URL. KGW is scoped to Panoptes' baked
+  demo key; the calibrated AI posteriors are the watermark-agnostic
+  cross-check.
 
 Vendor note (Aug 2026): Google retired SynthID text watermarking on the
 Generative Language API — API text output is no longer watermarked and
@@ -40,9 +44,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from detect_gumbel import DEFAULT_THRESHOLD, DEFAULT_WINDOW, detect_text
 
@@ -360,6 +367,137 @@ class ClaudeTextDetector:
 
 
 # ---------------------------------------------------------------------------
+# Panoptes — independent cross-detector workbench (HTTP)
+# ---------------------------------------------------------------------------
+
+PANOPTES_DEFAULT_TIMEOUT = 30.0
+PANOPTES_MAX_RESPONSE_BYTES = 1 << 20  # 1 MiB, mirroring MAX_CONFIG_BYTES discipline
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse HTTP redirects.
+
+    urllib's default handler re-sends request headers on 301/302/303; for a
+    user-configured analysis endpoint a silent redirect would forward
+    submitted text to an unvalidated host. Any 3xx now surfaces as HTTPError.
+    (Local copy: rewrite_text._NoRedirect cannot be imported here without a
+    circular import.)
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+class PanoptesTextDetector:
+    """Independent second opinion from a Panoptes workbench over HTTP.
+
+    Activated by PANOPTES_API_URL (e.g. http://127.0.0.1:8000 from
+    ``panoptes up``). Posts the text to /api/v1/analyze and maps the
+    response onto the detector contract:
+
+    - is_watermarked / score come from Panoptes' KGW adapter, which is keyed
+      to Panoptes' baked demo key — it detects only watermarks made with
+      that key, so it stays silent on third-party (e.g. MarkLLM) marks.
+    - ai_generation / ai_participation are the calibrated, watermark-agnostic
+      posteriors: the informative cross-check on whether a rewrite still
+      reads as machine-generated.
+
+    Fail-soft like every detector here: unreachable, slow, oversize, or
+    malformed responses return available=False with an error; never raises.
+    """
+
+    name = "panoptes"
+    vendor = "marketstandard"
+
+    def __init__(self, *, url: str | None = None, timeout: float | None = None) -> None:
+        self._url = url
+        self._timeout = timeout
+
+    def _base_url(self) -> str | None:
+        raw = self._url if self._url is not None else os.environ.get("PANOPTES_API_URL", "")
+        raw = raw.strip()
+        if not raw:
+            return None
+        u = urlparse(raw)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return None
+        return raw.rstrip("/")
+
+    def available(self) -> bool:
+        return self._base_url() is not None
+
+    def detect(self, text: str) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "detector": self.name,
+            "scheme": "kgw",
+            "vendor": self.vendor,
+            "available": False,
+        }
+        base = self._base_url()
+        if base is None:
+            report["error"] = "PANOPTES_API_URL not set or not a valid http(s) URL"
+            return report
+        timeout = (
+            self._timeout
+            if self._timeout is not None
+            else _env_float("PANOPTES_TIMEOUT", PANOPTES_DEFAULT_TIMEOUT)
+        )
+        body = json.dumps({"text": text, "content_type": "prose"}).encode("utf-8")
+        # S310: URL scheme is restricted to http/https in _base_url above.
+        req = urllib.request.Request(  # noqa: S310
+            f"{base}/api/v1/analyze",
+            data=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        opener = urllib.request.build_opener(_NoRedirect())
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                payload = resp.read(PANOPTES_MAX_RESPONSE_BYTES + 1)
+        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as e:
+            report["error"] = f"panoptes analyze failed: {e}"
+            return report
+        if len(payload) > PANOPTES_MAX_RESPONSE_BYTES:
+            report["error"] = f"panoptes response exceeds {PANOPTES_MAX_RESPONSE_BYTES} bytes"
+            return report
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as e:
+            report["error"] = f"bad panoptes JSON: {e}"
+            return report
+        if not isinstance(data, dict):
+            report["error"] = "bad panoptes response"
+            return report
+
+        summary = data.get("summary") or {}
+        kgw = next(
+            (
+                w
+                for w in (data.get("watermarks") or [])
+                if isinstance(w, dict) and w.get("scheme") == "kgw-v1"
+            ),
+            None,
+        )
+        kgw_tested = kgw is not None and kgw.get("status") == "tested"
+        report["available"] = True
+        report["is_watermarked"] = bool((kgw.get("p_value") or 1.0) < 0.05) if kgw_tested else None
+        report["score"] = kgw.get("z") if kgw_tested else None
+        report["kgw"] = (
+            {"status": kgw.get("status"), "z": kgw.get("z"), "p_value": kgw.get("p_value")}
+            if kgw is not None
+            else None
+        )
+        report["ai_generation"] = summary.get("ai_generation")
+        report["ai_participation"] = summary.get("ai_participation")
+        report["note"] = (
+            "Independent Panoptes analysis. KGW is scoped to Panoptes' baked demo "
+            "key — it detects only watermarks made with that key, not third-party "
+            "(e.g. MarkLLM) marks; the AI posteriors are the watermark-agnostic signal."
+        )
+        return report
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -377,7 +515,13 @@ def all_detectors(
     if include_gumbel:
         detectors.append(gumbel or GumbelTextDetector())
     detectors.append(ClaudeTextDetector())
+    detectors.append(PanoptesTextDetector())
     return detectors
+
+
+# Detectors selectable via bench_synthid_text.py --cross-detect <name>:
+# independent second opinions scored alongside the same-config detection.
+CROSS_DETECTORS: dict[str, Callable[[], TextDetector]] = {"panoptes": PanoptesTextDetector}
 
 
 def detector_status() -> dict[str, bool]:

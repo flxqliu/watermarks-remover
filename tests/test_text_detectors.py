@@ -23,6 +23,8 @@ def _clean_env(monkeypatch):
         "WATERMARKS_MARKLLM_SCHEME",
         "MARKLLM_DIR",
         "WATERMARKS_MARKLLM_TIMEOUT",
+        "PANOPTES_API_URL",
+        "PANOPTES_TIMEOUT",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -248,8 +250,8 @@ def test_run_all_text_detectors_can_exclude_markllm(monkeypatch):
         lambda: pytest.fail("must not construct MarkLLM when excluded"),
     )
     reports = text_detectors.run_all_text_detectors("hello", include_markllm=False)
-    assert len(reports) == 2  # gumbel + claude placeholder
-    assert {r["detector"] for r in reports} == {"gumbel", "claude-text"}
+    assert len(reports) == 3  # gumbel + claude placeholder + panoptes
+    assert {r["detector"] for r in reports} == {"gumbel", "claude-text", "panoptes"}
 
 
 def test_run_all_text_detectors_injects_markllm_instance(monkeypatch, tmp_path):
@@ -284,15 +286,190 @@ def test_claude_placeholder():
 
 def test_detector_status_keys():
     status = text_detectors.detector_status()
-    assert set(status) == {"markllm", "gumbel", "claude-text"}
+    assert set(status) == {"markllm", "gumbel", "claude-text", "panoptes"}
 
 
 def test_run_all_text_detectors_length():
     reports = text_detectors.run_all_text_detectors("hello")
-    assert len(reports) == 3  # markllm + gumbel + claude placeholder
+    assert len(reports) == 4  # markllm + gumbel + claude placeholder + panoptes
     assert all("detector" in r for r in reports)
 
 
 def test_run_text_detectors_filters_unavailable():
     reports = text_detectors.run_text_detectors("hello")
     assert reports == []
+
+
+# --- Panoptes cross-detector -------------------------------------------------
+
+
+def _spin_panoptes(payload=None, *, raw=None, delay=0.0):
+    """Loopback HTTP fake for the Panoptes /api/v1/analyze endpoint."""
+    import http.server
+    import threading
+    import time
+
+    captured: dict = {}
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["path"] = self.path
+            captured["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+            if delay:
+                time.sleep(delay)
+            body = raw if raw is not None else json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, captured
+
+
+def _panoptes_url(srv) -> str:
+    return f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def _panoptes_payload() -> dict:
+    return {
+        "summary": {"ai_generation": 0.91, "ai_participation": 0.95},
+        "watermarks": [
+            {"scheme": "kgw-v1", "status": "tested", "z": 7.13, "p_value": 1e-12},
+        ],
+    }
+
+
+def test_panoptes_unconfigured():
+    det = text_detectors.PanoptesTextDetector()
+    assert det.available() is False
+    report = det.detect("hello")
+    assert report["available"] is False
+    assert "PANOPTES_API_URL" in report["error"]
+
+
+def test_panoptes_rejects_non_http_scheme(monkeypatch):
+    monkeypatch.setenv("PANOPTES_API_URL", "file:///etc/passwd")
+    det = text_detectors.PanoptesTextDetector()
+    assert det.available() is False
+    assert det.detect("hello")["available"] is False
+
+
+def test_panoptes_success_maps_analysis_response():
+    srv, captured = _spin_panoptes(_panoptes_payload())
+    try:
+        det = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv))
+        assert det.available() is True
+        report = det.detect("some text")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is True
+    assert report["is_watermarked"] is True
+    assert report["score"] == 7.13
+    assert report["kgw"]["p_value"] == 1e-12
+    assert report["ai_generation"] == 0.91
+    assert report["ai_participation"] == 0.95
+    assert "demo key" in report["note"]
+    assert captured["path"] == "/api/v1/analyze"
+    assert json.loads(captured["body"]) == {"text": "some text", "content_type": "prose"}
+
+
+def test_panoptes_kgw_not_tested_yields_unknown():
+    payload = _panoptes_payload()
+    payload["watermarks"][0].update({"status": "insufficient_data", "z": None, "p_value": None})
+    srv, _ = _spin_panoptes(payload)
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is True
+    assert report["is_watermarked"] is None
+    assert report["score"] is None
+    assert report["ai_generation"] == 0.91
+
+
+def test_panoptes_unreachable_fails_soft():
+    det = text_detectors.PanoptesTextDetector(url="http://127.0.0.1:1", timeout=2.0)
+    assert det.available() is True  # well-formed URL; reachability is a detect-time concern
+    report = det.detect("hello")
+    assert report["available"] is False
+    assert "failed" in report["error"]
+
+
+def test_panoptes_timeout_fails_soft():
+    srv, _ = _spin_panoptes(_panoptes_payload(), delay=1.5)
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv), timeout=0.2).detect(
+            "x"
+        )
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is False
+    assert "failed" in report["error"]
+
+
+def test_panoptes_malformed_json_fails_soft():
+    srv, _ = _spin_panoptes(raw=b"not json")
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is False
+    assert report["error"].startswith("bad panoptes JSON")
+
+
+def test_panoptes_oversize_response_fails_soft():
+    raw = b" " * (text_detectors.PANOPTES_MAX_RESPONSE_BYTES + 10)
+    srv, _ = _spin_panoptes(raw=raw)
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is False
+    assert "exceeds" in report["error"]
+
+
+def test_panoptes_redirect_is_refused():
+    """A 302 must surface as an error, never a followed redirect (text would leak)."""
+    import http.server
+    import threading
+
+    class _R(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/never")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _R)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        report = text_detectors.PanoptesTextDetector(url=_panoptes_url(srv)).detect("secret")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert report["available"] is False
+    assert "failed" in report["error"]
+
+
+def test_panoptes_ctor_url_overrides_env(monkeypatch):
+    monkeypatch.setenv("PANOPTES_API_URL", "http://127.0.0.1:1")
+    det = text_detectors.PanoptesTextDetector(url="http://example.invalid:9/")
+    assert det._base_url() == "http://example.invalid:9"  # trailing slash stripped
+
+
+def test_cross_detectors_registry():
+    assert sorted(text_detectors.CROSS_DETECTORS) == ["panoptes"]
+    assert text_detectors.CROSS_DETECTORS["panoptes"]().name == "panoptes"
