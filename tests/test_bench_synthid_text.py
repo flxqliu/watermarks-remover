@@ -9,6 +9,7 @@ controls, and the JSON/CSV/Markdown outputs.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
@@ -940,6 +941,53 @@ def test_fixtures_tampered_file_refused(tmp_path, monkeypatch, capsys):
     )
     assert bench.main() == 2
     assert "sha256" in capsys.readouterr().err
+
+
+def test_fixtures_missing_text_file_refused(tmp_path, monkeypatch, capsys):
+    pack_copy = tmp_path / "pack"
+    shutil.copytree(FIXTURE_PACK, pack_copy)
+    (pack_copy / "texts" / "kgw-000.txt").unlink()
+    with pytest.raises(bench.FixturePackError, match="cannot read"):
+        bench.load_fixture_pack(pack_copy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench_synthid_text.py", "--fixtures", str(pack_copy), "--out-dir", str(tmp_path / "o")],
+    )
+    assert bench.main() == 2
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_fixtures_csv_quotes_notes_with_commas(tmp_path, monkeypatch):
+    """Detector error text containing commas must not break the 12-column CSV."""
+
+    class _CommaErrorPanoptes:
+        def available(self):
+            return True
+
+        def detect(self, text):
+            return {"available": False, "error": "connection refused, retry later"}
+
+    rc, out_dir = _run_fixtures(tmp_path, monkeypatch, _CommaErrorPanoptes())
+    assert rc == 0
+    with (out_dir / "results.csv").open(newline="", encoding="utf-8") as fh:
+        parsed = list(csv.reader(fh))
+    assert parsed[0] == [
+        "id",
+        "family",
+        "variant",
+        "unicode_present",
+        "expected_unicode",
+        "expected_kgw",
+        "kgw_available",
+        "kgw_pos",
+        "kgw_z",
+        "kgw_p_value",
+        "ai_generation",
+        "notes",
+    ]
+    assert all(len(row) == 12 for row in parsed[1:])
+    assert any("connection refused, retry later" in row[11] for row in parsed[1:])
 
 
 def test_fixtures_unknown_schema_rejected(tmp_path):

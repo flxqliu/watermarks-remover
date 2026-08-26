@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import hashlib
+import io
 import json
 import os
 import queue
@@ -1274,7 +1276,12 @@ def load_fixture_pack(pack_dir: Path) -> dict[str, Any]:
     mismatched: list[str] = []
     for sample in samples:
         _check_fixture_sample(sample, seen=seen)
-        blob = (pack_dir / sample["text_file"]).read_bytes()
+        try:
+            blob = (pack_dir / sample["text_file"]).read_bytes()
+        except OSError as e:
+            raise FixturePackError(
+                f"sample {sample['id']!r}: cannot read {sample['text_file']}: {e}"
+            ) from e
         if hashlib.sha256(blob).hexdigest() != sample["sha256"]:
             mismatched.append(sample["id"])
     if mismatched:
@@ -1375,7 +1382,7 @@ def render_fixtures_markdown(
     L.append(f"# SynthID-text benchmark — fixture pack {config['tag']}")
     L.append("")
     L.append(f"- Date: {config['timestamp']}")
-    L.append(f"- watermarks-remover commit: {config['repo_commit']}")
+    L.append(f"- watermarks-remover commit: {config.get('repo_commit') or 'unknown'}")
     L.append(f"- Pack: {config['fixtures']} (schema {pack['schema']})")
     L.append(f"- Source card sha256: {pack['source_card_sha256']}")
     L.append(
@@ -1497,32 +1504,43 @@ def run_fixtures_mode(args: argparse.Namespace, *, panoptes: Any = None) -> int:
         config, pack, rows, summary, mismatches, panoptes_configured=panoptes_configured
     )
 
-    csv_lines = [
-        "id,family,variant,unicode_present,expected_unicode,expected_kgw,"
-        "kgw_available,kgw_pos,kgw_z,kgw_p_value,ai_generation,notes"
-    ]
+    csv_buf = io.StringIO()
+    writer = csv.writer(csv_buf, lineterminator="\n")
+    writer.writerow(
+        [
+            "id",
+            "family",
+            "variant",
+            "unicode_present",
+            "expected_unicode",
+            "expected_kgw",
+            "kgw_available",
+            "kgw_pos",
+            "kgw_z",
+            "kgw_p_value",
+            "ai_generation",
+            "notes",
+        ]
+    )
     for r in rows:
         rep = r.get("kgw") or {}
         kgw_detail = rep.get("kgw") or {}
         kgw_pos = rep.get("is_watermarked")
-        csv_lines.append(
-            ",".join(
-                str(v)
-                for v in (
-                    r["id"],
-                    r["family"],
-                    r["variant"],
-                    1 if r["unicode_present"] else 0,
-                    1 if r["expected"]["unicode_present"] else 0,
-                    1 if r["expected"]["kgw_detectable"] else 0,
-                    1 if rep.get("available") else 0,
-                    "" if kgw_pos is None else (1 if kgw_pos else 0),
-                    rep.get("score") if rep.get("available") else "",
-                    kgw_detail.get("p_value") if rep.get("available") else "",
-                    rep.get("ai_generation") if rep.get("available") else "",
-                    "; ".join(str(n) for n in r["notes"]),
-                )
-            )
+        writer.writerow(
+            [
+                r["id"],
+                r["family"],
+                r["variant"],
+                1 if r["unicode_present"] else 0,
+                1 if r["expected"]["unicode_present"] else 0,
+                1 if r["expected"]["kgw_detectable"] else 0,
+                1 if rep.get("available") else 0,
+                "" if kgw_pos is None else (1 if kgw_pos else 0),
+                rep.get("score") if rep.get("available") else "",
+                kgw_detail.get("p_value") if rep.get("available") else "",
+                rep.get("ai_generation") if rep.get("available") else "",
+                "; ".join(str(n) for n in r["notes"]),
+            ]
         )
 
     (out_dir / "report.md").write_text(report, encoding="utf-8")
@@ -1544,7 +1562,7 @@ def run_fixtures_mode(args: argparse.Namespace, *, panoptes: Any = None) -> int:
         ),
         encoding="utf-8",
     )
-    (out_dir / "results.csv").write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    (out_dir / "results.csv").write_text(csv_buf.getvalue(), encoding="utf-8")
 
     eprint("")
     eprint(f"results written to {out_dir}/")
