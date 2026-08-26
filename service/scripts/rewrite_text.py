@@ -305,15 +305,26 @@ def build_prompt(
     raise ValueError(f"unknown strength: {strength}")
 
 
-def _split_units(text: str) -> list[str]:
-    """Split a document into fragments (sentences / paragraphs).
+def _split_units(text: str) -> list[tuple[str, str]]:
+    """Split a document into (unit, separator) pairs.
 
     Breaks after sentence punctuation or on any blank-line / newline run, so
     each fragment is rewritten independently (a fresh context per fragment ⇒
-    new per-token watermark keys). Punctuation is kept with its fragment.
+    new per-token watermark keys). Punctuation is kept with its fragment. The
+    separator is the whitespace/blank-line run that follows a unit ('' for the
+    last); unshuffled chunk mode reassembles with it so paragraph/line layout
+    is preserved, while shuffled mode drops it.
     """
-    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
-    return [p.strip() for p in parts if p.strip()]
+    parts = re.split(r"((?<=[.!?])\s+|\n+)", text)
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    while i < len(parts):
+        unit = parts[i]
+        sep = parts[i + 1] if i + 1 < len(parts) else ""
+        if unit.strip() or "\n" in sep:
+            pairs.append((unit.strip(), sep))
+        i += 2
+    return pairs
 
 
 def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float) -> dict:
@@ -520,30 +531,32 @@ def rewrite(
     info["chunked"] = is_chunk
     info["chunk_shuffle"] = bool(chunk_shuffle)
 
+    def _rewrite_unit(unit: str) -> str:
+        return _generate_once(
+            backend,
+            base_url,
+            model,
+            api_key,
+            build_prompt(
+                strength,
+                unit,
+                lang=lang,
+                original_lang=original_lang,
+                rewrite_level=rewrite_level,
+            ),
+            timeout,
+            temperature,
+            reasoning_effort,
+        )
+
     def _generate_candidate() -> str:
         if is_chunk:
-            units = _split_units(text)
+            pairs = _split_units(text)
+            units = [unit for unit, _ in pairs]
             if chunk_shuffle:
                 random.shuffle(units)
-            return " ".join(
-                _generate_once(
-                    backend,
-                    base_url,
-                    model,
-                    api_key,
-                    build_prompt(
-                        strength,
-                        unit,
-                        lang=lang,
-                        original_lang=original_lang,
-                        rewrite_level=rewrite_level,
-                    ),
-                    timeout,
-                    temperature,
-                    reasoning_effort,
-                )
-                for unit in units
-            )
+                return " ".join(_rewrite_unit(unit) for unit in units)
+            return "".join(_rewrite_unit(unit) + sep for unit, sep in pairs)
         return _generate_once(
             backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
         )

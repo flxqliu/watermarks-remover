@@ -581,7 +581,7 @@ def test_strength_chunk_reassembles_fragments(monkeypatch):
     assert info["chunk_shuffle"] is False
     # each fragment is rewritten with a fresh context (fresh per-token key)
     assert calls == ["First sentence.", "Second sentence!", "Third paragraph?"]
-    assert out == "RE: First sentence. RE: Second sentence! RE: Third paragraph?"
+    assert out == "RE: First sentence. RE: Second sentence!\n\nRE: Third paragraph?"
 
 
 def test_strength_chunk_shuffle_reorders_fragments(monkeypatch):

@@ -71,13 +71,13 @@ exposes detection again (e.g. via Vertex AI).
 the Layer B rewrite with candidates as the **variants per evaluation round**;
 `--rewrite-loops` (default 1, mirrors `--max-loops` /
 `WATERMARKS_REWRITE_LOOPS`) sets how many rounds run before the best-effort
-variant is returned. The rewrite is iterative: it generates a variant, runs
-MarkLLM detection (same-config) on it, and stops as soon as an attempt is not
-watermarked — so a variant usually costs fewer rewrites than its candidate
-count, and paraphrase:3 means "try up to 3 variants, stop on the first pass"
-(raise `--rewrite-loops` to keep retrying new variants until one passes).
-The report's att column (and mean_attempts in results.json / attempts in
-results.csv) records the actual attempts per document.
+variant is returned. The rewrite is iterative: it generates a round's
+candidates, scores each one, and selects by the margin-aware policy below —
+there is no "first pass wins" early stop, so a variant evaluates every
+candidate in a round and costs at most its candidate count per round (raise
+`--rewrite-loops` to run more rounds). The report's att column (and
+mean_attempts in results.json / attempts in results.csv) records the actual
+attempts per document.
 
 **Selection is margin-aware, not first-pass.** The rewrite evaluates every
 candidate in a round (no early stop on the first "not watermarked"), treats a
@@ -88,6 +88,18 @@ min-divergence`, content-preserving) or the one with the largest margin
 (`--select max-margin`, robustness-first). Raising `--target-margin` is how you
 ask for a removal that survives a stricter/vendor detector rather than a
 hair-thin threshold crossing.
+
+**Strengths:** `paraphrase` (same language, rephrase), `backtranslate` (via
+another language), `structural`, `humanize`, `code`, and `chunk`. `chunk`
+splits the document into sentence/paragraph fragments, rewrites each with a
+fresh context (new per-token watermark keys), and reassembles them. It is the
+strongest removal at a given rewrite cost because every fragment re-keys
+independently; use `--strength chunk` for that, optionally with
+`--chunk-shuffle` to also shuffle the rewritten fragments (which breaks
+paragraph/line order). Without `--chunk-shuffle`, `chunk` keeps the original
+separators so layout is preserved. `chunk` is accepted wherever a variant
+strength is expected, including `parse_variants` (e.g. `--variants
+"chunk:2,paraphrase:3"`).
 
 ## Minimal-rewrite-level mode (`--mode minimal`)
 

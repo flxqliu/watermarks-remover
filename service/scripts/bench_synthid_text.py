@@ -1062,7 +1062,7 @@ class Benchmark:
             return mk
         return self.detect(out_text)
 
-    def _score_margin(self, report: dict[str, Any]) -> float | None:
+    def _score_margin(self, report: dict[str, Any] | None) -> float | None:
         """margin = threshold - score for an after-detection report (None if N/A)."""
         if not report or not report.get("available"):
             return None
@@ -1072,11 +1072,8 @@ class Benchmark:
             return round(float(threshold) - float(score), 4)
         return None
 
-    def _rewrite_cleared(self, stats: dict[str, Any], out_text: str) -> bool:
-        """Did the rewrite's own MarkLLM verification say the mark is gone?
-        Delegates to _rewrite_report, which falls back to a direct detection.
-        """
-        report = self._rewrite_report(stats, out_text)
+    def _report_cleared(self, report: dict[str, Any]) -> bool:
+        """Did the after-detection report say the mark is gone?"""
         return bool(report.get("available")) and not bool(report.get("is_watermarked"))
 
     def minimal_search(self, samples: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
@@ -1158,9 +1155,9 @@ class Benchmark:
                     except RuntimeError as e:
                         failed = str(e)
                         break
-                    if not self._rewrite_cleared(stats, out_text):
-                        continue
                     report = self._rewrite_report(stats, out_text)
+                    if not self._report_cleared(report):
+                        continue
                     margin = self._score_margin(report)
                     # A clear by a hair is not a robust removal: require the
                     # configured margin before the level counts as "cleared".
