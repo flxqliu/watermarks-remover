@@ -25,6 +25,9 @@
 !/CONTRIBUTING.md
 !/LICENSE
 !/Makefile
+# Panoptes adapter contract (docs/panoptes-adapter.md)
+!/panoptes.adapter.json
+!/panoptes_adapter.py
 !/pytest.ini
 !/README.md
 !/requirements-dev.txt

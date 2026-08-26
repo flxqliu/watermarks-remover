@@ -680,6 +680,24 @@ Use a **non-origin model** for rewriting (do not rewrite with the same
 watermarked model that generated the text) or the rewrite can re-stamp the
 output; `--restamp-control` measures this.
 
+## Optional Panoptes evaluation
+
+This repository ships a native
+[Panoptes](https://github.com/marketstandard/Panoptes) adapter
+(`panoptes.adapter.json` + `panoptes_adapter.py` at the root), so the
+Panoptes workbench can evaluate watermark removal here directly and emit a
+signed before/after card — no injected adapter needed:
+
+```bash
+python -m bench evaluate-repo \
+  https://github.com/guillaumemeyer/watermarks-remover --kind watermark-remover
+```
+
+The card quantifies the family split: Unicode carriers go from 100% present
+to 0%, while the statistical KGW watermark stays 100% detected under Layer A
+alone. Details and the Layer B opt-in:
+[`docs/panoptes-adapter.md`](docs/panoptes-adapter.md).
+
 ## Optional MarkDiffusion image-watermark harness
 
 For **controlled experiments on images**, an optional external harness wraps
