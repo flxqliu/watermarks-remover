@@ -66,6 +66,7 @@ def _args(**overrides):
         rewrite_level_step=0.1,
         rewrite_level_max=1.0,
         level_attempts=3,
+        target_margin=0.0,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -81,7 +82,9 @@ def _make_bench(tmp_path, monkeypatch, patch_steps=True, **args_overrides):
             b, "detect", lambda text: DETECT_POS if text.startswith("watermarked") else DETECT_NEG
         )
         monkeypatch.setattr(
-            b, "rewrite", lambda text, strength, candidates: (text + " rewritten", _rewrite_stats())
+            b,
+            "rewrite",
+            lambda text, strength, candidates, **kw: (text + " rewritten", _rewrite_stats()),
         )
     return b, args
 
@@ -108,7 +111,12 @@ def _rewrite_stats(cleared=True, evaluator="markllm", attempts_made=1, passed=Tr
         "passed": passed,
         "markllm": {
             "before": dict(DETECT_POS),
-            "after": {"available": True, "is_watermarked": not cleared, "score": -0.5},
+            "after": {
+                "available": True,
+                "is_watermarked": not cleared,
+                "score": -0.5,
+                "threshold": 0.5,
+            },
             "cleared": cleared,
             "note": "same-config only",
         },
@@ -177,6 +185,7 @@ def test_aggregate_clear_rate_and_efficiency():
             "cleared": True,
             "score_before": 2.0,
             "score_after": -1.0,
+            "margin": 1.0,
             "quality": {
                 "lexical_divergence": 0.8,
                 "length_ratio": 1.0,
@@ -197,6 +206,7 @@ def test_aggregate_clear_rate_and_efficiency():
             "cleared": False,
             "score_before": 2.0,
             "score_after": 1.5,
+            "margin": -1.5,
             "quality": {
                 "lexical_divergence": 0.6,
                 "length_ratio": 1.0,
@@ -218,6 +228,7 @@ def test_aggregate_clear_rate_and_efficiency():
     assert a["mean_score_delta"] == 1.75  # ((2-(-1)) + (2-1.5)) / 2
     assert a["mean_tokens_out"] == 250
     assert a["mean_attempts"] == 2.0  # (1 + 3) / 2
+    assert a["mean_margin"] == -0.25  # (1.0 + -1.5) / 2
     assert a["clears_per_mtok_out"] == pytest.approx(2000.0)  # 0.5 / (250/1e6)
 
 
@@ -309,7 +320,7 @@ def test_run_variants_rows_and_clear_rate(tmp_path, monkeypatch):
 def test_rewrite_failure_is_recorded_not_fatal(tmp_path, monkeypatch):
     b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
 
-    def _boom(text, strength, candidates):
+    def _boom(text, strength, candidates, **kw):
         raise RuntimeError("backend down")
 
     monkeypatch.setattr(b, "rewrite", _boom)
@@ -808,7 +819,7 @@ def test_minimal_search_escalates_until_cleared(tmp_path, monkeypatch):
     samples = b.generate_samples(tmp_path / "work")
     levels_called = []
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None):
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
         levels_called.append(rewrite_level)
         cleared = rewrite_level is not None and rewrite_level >= 0.3
         return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=cleared, attempts_made=1)
@@ -830,7 +841,7 @@ def test_minimal_search_picks_min_semantic_among_clearing(tmp_path, monkeypatch)
     samples = b.generate_samples(tmp_path / "work")
     sems = iter([0.9, 0.3, 0.7])
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None):
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
         return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=True, attempts_made=1)
 
     monkeypatch.setattr(b, "rewrite", fake_rewrite)
@@ -847,7 +858,7 @@ def test_minimal_search_records_not_cleared_when_no_level_clears(tmp_path, monke
     b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1)
     samples = b.generate_samples(tmp_path / "work")
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None):
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
         return f"{text} rewritten", _rewrite_stats(cleared=False, attempts_made=1)
 
     monkeypatch.setattr(b, "rewrite", fake_rewrite)
@@ -859,10 +870,57 @@ def test_minimal_search_records_not_cleared_when_no_level_clears(tmp_path, monke
     assert "not cleared at any level" in "; ".join(row["notes"])
 
 
+def test_minimal_search_target_margin_gates_tiny_clear(tmp_path, monkeypatch):
+    b, _ = _make_bench(
+        tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1, target_margin=2.0
+    )
+    samples = b.generate_samples(tmp_path / "work")
+    levels_called = []
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        levels_called.append(rewrite_level)
+        # "clears" by the detector (is_watermarked False) but the fake margin
+        # is 1.0 < target_margin 2.0, so it is gated out of the clear count.
+        return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=True, attempts_made=1)
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    monkeypatch.setattr(b.semantic, "score", lambda o, c: 0.25)
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    # No level can clear against target_margin=2.0 (fake margin is 1.0), so the
+    # search escalates to the max and records a failure, not a hair-thin pass.
+    assert row["cleared"] is False
+    assert row["level"] == b.args.rewrite_level_max
+    assert levels_called == [
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.9,
+        1.0,
+    ]
+
+
 def test_aggregate_minimal_means_and_usage():
     rows = [
-        {"cleared": True, "level": 0.2, "semantic_divergence": 0.1, "lexical_divergence": 0.3},
-        {"cleared": True, "level": 0.6, "semantic_divergence": 0.4, "lexical_divergence": 0.5},
+        {
+            "cleared": True,
+            "level": 0.2,
+            "semantic_divergence": 0.1,
+            "lexical_divergence": 0.3,
+            "margin": 0.9,
+        },
+        {
+            "cleared": True,
+            "level": 0.6,
+            "semantic_divergence": 0.4,
+            "lexical_divergence": 0.5,
+            "margin": 1.5,
+        },
         {"cleared": False, "level": 1.0, "semantic_divergence": None, "lexical_divergence": None},
     ]
     agg = bench.aggregate_minimal(rows)
@@ -873,4 +931,5 @@ def test_aggregate_minimal_means_and_usage():
     assert agg["median_min_level"] == pytest.approx(0.6, rel=1e-4)
     assert agg["mean_min_semantic_divergence"] == pytest.approx(0.25, rel=1e-4)
     assert agg["mean_min_lexical_divergence"] == pytest.approx(0.4, rel=1e-4)
+    assert agg["mean_min_margin"] == pytest.approx(1.2, rel=1e-4)  # (0.9 + 1.5) / 2
     assert agg["level_usage"] == [(0.2, 1), (0.6, 1)]

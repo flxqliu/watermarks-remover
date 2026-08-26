@@ -10,6 +10,7 @@ removal variants, and emits a shareable report.
 | Metric | Meaning |
 | --- | --- |
 | Clear rate | % of watermarked samples that flip to not-watermarked after removal (MarkLLM same-config detection) |
+| Removal margin | mean (threshold - score) after removal. The robust objective: a "clear" that crosses the threshold by a hair (margin ≈ 0) is not a real removal |
 | Score suppression | mean/median drop in detector score (before - after) |
 | Quality | lexical divergence (bigram Jaccard distance), semantic divergence (1 - cosine similarity via sentence-transformers), length drift, number/URL survival |
 | Cost | estimated tokens in/out, wall time per document, optional USD at your prices |
@@ -78,6 +79,16 @@ count, and paraphrase:3 means "try up to 3 variants, stop on the first pass"
 The report's att column (and mean_attempts in results.json / attempts in
 results.csv) records the actual attempts per document.
 
+**Selection is margin-aware, not first-pass.** The rewrite evaluates every
+candidate in a round (no early stop on the first "not watermarked"), treats a
+candidate as a pass only when its after-score sits at least `--target-margin`
+below the threshold (default 0.0 = any not-watermarked verdict), and then picks
+the passing candidate that changed the least by default (`--select
+min-divergence`, content-preserving) or the one with the largest margin
+(`--select max-margin`, robustness-first). Raising `--target-margin` is how you
+ask for a removal that survives a stricter/vendor detector rather than a
+hair-thin threshold crossing.
+
 ## Minimal-rewrite-level mode (`--mode minimal`)
 
 The named-strength variants above answer "does this rewrite remove the mark?"
@@ -95,7 +106,11 @@ mark?"** for a given sample, then aggregates that minimum across samples.
 - At the first level where at least one rewrite clears (same-config MarkLLM
   detection), it keeps the rewrite with the **smallest semantic divergence**
   and records that level. One row per sample records the chosen level, its
-  lexical/semantic divergence, and the attempts spent.
+  lexical/semantic divergence, its removal margin, and the attempts spent.
+- Pass `--target-margin` (e.g. 0.5) to require a rewrite to sit at least that
+  far below the threshold before a level counts as cleared. Without it a level
+  that crosses the threshold by a hair — the failing "100% clear, Δ≈0.03" case
+  — is reported as cleared even though it is not a robust removal.
 - `aggregate_minimal` reports across samples: clear rate, mean/median minimal
   level, mean/median minimal semantic divergence, mean minimal lexical
   divergence, and a level-usage histogram.
@@ -167,6 +182,23 @@ are not a constraint inside the container either.
   and Google retired text watermark detection on its API (Aug 2026), so no
   vendor tier exists to verify against. Rewriting with a watermarked model
   can also re-stamp the text - run --restamp-control to check.
+
+## Humanizer and cross-model hygiene
+
+Two things are easy to mistake for removal but are not, or can silently undo it:
+
+- **The humanizer is style polish, not removal.** It targets deterministic
+  writing tells (em dashes, rule of three, AI vocabulary, passive voice) and
+  intentionally preserves facts, numbers, and names — the opposite of what a
+  watermark attack wants. It changes few tokens per pass and optimizes "sounds
+  like a human", which is a different objective from "green-list bias gone".
+  Keep it as an optional final style polish, but measure removal with the
+  detector score (and `--target-margin`), not with how natural the text reads.
+  In the variant table it is a mid-strength pass, not the removal step.
+- **Cross-model hygiene (correctness).** Rewriting with a model that is the
+  generator or is itself watermarked re-stamps the text you just removed. Use a
+  rewrite backend that is neither, and run `--restamp-control` to detect when
+  the backend re-stamps the unwatermarked control (after-positive > 0).
 
 ## Sharing a run
 
