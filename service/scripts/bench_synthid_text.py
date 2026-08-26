@@ -32,6 +32,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
+import hashlib
+import io
 import json
 import os
 import queue
@@ -40,7 +43,7 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from shutil import which
 from typing import Any
 from urllib.parse import urlparse
@@ -51,7 +54,8 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from common import eprint, subprocess_creationflags  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
-from text_unicode import clean_text  # noqa: E402
+from text_detectors import CROSS_DETECTORS, PanoptesTextDetector  # noqa: E402
+from text_unicode import clean_text, inspect_text  # noqa: E402
 
 _RESOLVED_SCRIPT = Path(__file__).resolve()
 try:
@@ -628,6 +632,10 @@ class Benchmark:
         self.chars_per_token = args.chars_per_token
         self.scheme = args.scheme
         self.config = args.config
+        self.cross = [CROSS_DETECTORS[name]() for name in (args.cross_detect or [])]
+        for d in self.cross:
+            if not d.available():
+                eprint(f"cross-detector {d.name}: not reachable now; rows will record the reason")
         self.worker = None
         if not args.no_worker:
             try:
@@ -720,6 +728,10 @@ class Benchmark:
         )
 
     # -- phases ------------------------------------------------------------
+
+    def _cross(self, text: str) -> dict[str, Any]:
+        """Independent second-opinion detectors (--cross-detect); fail-soft."""
+        return {d.name: d.detect(text) for d in self.cross}
 
     def generate_samples(self, workdir: Path) -> list[dict[str, Any]]:
         """Generate and sanity-check watermarked/unwatermarked pairs."""
@@ -901,24 +913,23 @@ class Benchmark:
                         )
                         continue
                     after = self.detect(out_text)
-                    rows.append(
-                        {
-                            **base,
-                            "variant": variant,
-                            "kind": "restamp",
-                            "after_pos": _detect_positive(after),
-                            "score_after": _score_of(after),
-                            "cleared": None,
-                            "quality": _quality(
-                                sample["unwatermarked"], out_text, self.chars_per_token
-                            ),
-                            "notes": (
-                                ["re-stamped by rewrite backend"]
-                                if _detect_positive(after)
-                                else [],
-                            ),
-                        }
-                    )
+                    restamp_row: dict[str, Any] = {
+                        **base,
+                        "variant": variant,
+                        "kind": "restamp",
+                        "after_pos": _detect_positive(after),
+                        "score_after": _score_of(after),
+                        "cleared": None,
+                        "quality": _quality(
+                            sample["unwatermarked"], out_text, self.chars_per_token
+                        ),
+                        "notes": (
+                            ["re-stamped by rewrite backend"] if _detect_positive(after) else []
+                        ),
+                    }
+                    if self.cross:
+                        restamp_row["cross"] = self._cross(out_text)
+                    rows.append(restamp_row)
             cleared_count = sum(
                 1
                 for r in rows
@@ -968,6 +979,10 @@ class Benchmark:
             row["notes"].append("no removal applied (baseline)")
         elif kind == "layer-a":
             row["notes"].append("Layer A only; statistical marks are expected to survive")
+        if self.cross:
+            # Cross-detection runs on the row's output text; control rows
+            # (candidate == watermarked text) double as the pre-removal baseline.
+            row["cross"] = self._cross(candidate)
         return row
 
 
@@ -1046,6 +1061,20 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
                 {n for r in group for n in (r.get("notes") or []) if isinstance(n, str)}
             ),
         }
+        cross_names = sorted({n for r in group for n in (r.get("cross") or {})})
+        for name in cross_names:
+            reports = [(r.get("cross") or {}).get(name) or {} for r in group]
+            avail = [rep for rep in reports if rep.get("available")]
+            ai = [
+                rep["ai_generation"]
+                for rep in avail
+                if isinstance(rep.get("ai_generation"), (int, float))
+            ]
+            entries[f"cross_{name}"] = {
+                "n_available": len(avail),
+                "kgw_positive": sum(1 for rep in avail if rep.get("is_watermarked")),
+                "mean_ai_generation": round(_mean(ai), 4) if ai else None,
+            }
         out[variant] = entries
     return out
 
@@ -1138,6 +1167,37 @@ def render_markdown(
     else:
         L.append("- Re-stamp control: not run (pass --restamp-control)")
     L.append("")
+    cross_names = sorted({n for r in rows for n in (r.get("cross") or {})})
+    for name in cross_names:
+        L.append(f"## Cross-detector second opinion: {name}")
+        L.append("")
+        L.append(
+            "An independent detector (--cross-detect) scored every row's output "
+            "text; control rows (no removal) double as the pre-removal baseline."
+        )
+        L.append("")
+        L.append("| Variant | n | available | kgw+ (demo key) | AI posterior μ |")
+        L.append("| --- | ---: | ---: | ---: | ---: |")
+        for variant, a in agg.items():
+            c = a.get(f"cross_{name}")
+            if not c:
+                continue
+            L.append(
+                f"| {variant} | {a['n']} | {c['n_available']} | "
+                f"{c['kgw_positive']} | {_fmt(c['mean_ai_generation'])} |"
+            )
+        L.append("")
+        if name == "panoptes":
+            L.append(
+                "**Caveat:** the panoptes KGW reading is scoped to Panoptes' baked demo "
+                "key — it detects only watermarks made with that key, so no true matches "
+                "are expected on this MarkLLM-generated corpus; any positive warrants "
+                "investigation (false positive or key reuse), not an automatic benchmark "
+                "defect. The AI posterior is the watermark-agnostic signal: compare "
+                "rewrite rows against the control baseline to see whether removal still "
+                "reads as machine-generated."
+            )
+            L.append("")
     L.append("## Reproduction")
     L.append("")
     L.append("    " + config["command"])
@@ -1145,6 +1205,383 @@ def render_markdown(
     L.append("Full per-row data: results.json / results.csv in this directory.")
     L.append("")
     return "\n".join(L) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Fixture-pack mode (--fixtures): multi-family retention on a pinned corpus
+# ---------------------------------------------------------------------------
+
+FIXTURE_PACK_SCHEMA = "panoptes-watermark-fixtures-v1"
+FIXTURE_FAMILIES = ("control", "kgw", "unicode")
+_FIXTURE_PACK_KEYS = {"schema", "created_utc", "source_card_sha256", "n_samples", "samples"}
+_FIXTURE_SAMPLE_KEYS = {"id", "family", "model", "key_id", "text_file", "expected", "sha256"}
+
+
+class FixturePackError(RuntimeError):
+    """The fixture pack failed schema or integrity validation."""
+
+
+def _check_fixture_sample(sample: Any, *, seen: set[str]) -> None:
+    if not isinstance(sample, dict) or not _FIXTURE_SAMPLE_KEYS.issubset(sample.keys()):
+        raise FixturePackError(f"sample missing required keys {sorted(_FIXTURE_SAMPLE_KEYS)}")
+    if sample["family"] not in FIXTURE_FAMILIES:
+        raise FixturePackError(f"sample {sample['id']!r}: unknown family {sample['family']!r}")
+    if sample["id"] in seen:
+        raise FixturePackError(f"duplicate sample id {sample['id']!r}")
+    seen.add(sample["id"])
+    expected = sample["expected"]
+    if not isinstance(expected, dict) or not all(
+        isinstance(expected.get(k), bool) for k in ("kgw_detectable", "unicode_present")
+    ):
+        raise FixturePackError(
+            f"sample {sample['id']!r}: expected needs boolean kgw_detectable/unicode_present"
+        )
+    sha = sample["sha256"]
+    if not (isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha)):
+        raise FixturePackError(f"sample {sample['id']!r}: sha256 must be 64 lowercase hex chars")
+    text_file = PurePosixPath(str(sample["text_file"]))
+    if (
+        text_file.is_absolute()
+        or ".." in text_file.parts
+        or text_file != PurePosixPath("texts") / f"{sample['id']}.txt"
+    ):
+        raise FixturePackError(
+            f"sample {sample['id']!r}: text_file must be texts/{sample['id']}.txt, "
+            f"got {sample['text_file']!r}"
+        )
+
+
+def load_fixture_pack(pack_dir: Path) -> dict[str, Any]:
+    """Load and validate a ``panoptes-watermark-fixtures-v1`` pack.
+
+    Mirror of Panoptes' ``bench/export_watermark_corpus.py`` validation (keep
+    in sync): schema version, per-sample shape, ``text_file`` confinement to
+    ``texts/<id>.txt``, and a sha256 check of every text file. Raises on any
+    mismatch — a tampered or drifted pack must never produce a report.
+    """
+    pack_dir = Path(pack_dir)
+    manifest_path = pack_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FixturePackError(f"no manifest.json in {pack_dir}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise FixturePackError(f"manifest.json is not valid JSON: {e}") from e
+    if not isinstance(manifest, dict) or not _FIXTURE_PACK_KEYS.issubset(manifest.keys()):
+        raise FixturePackError(f"manifest missing required keys {sorted(_FIXTURE_PACK_KEYS)}")
+    if manifest["schema"] != FIXTURE_PACK_SCHEMA:
+        raise FixturePackError(
+            f"unsupported pack schema {manifest['schema']!r} (want {FIXTURE_PACK_SCHEMA!r})"
+        )
+    samples = manifest["samples"]
+    if not isinstance(samples, list) or manifest["n_samples"] != len(samples):
+        raise FixturePackError("n_samples does not match the samples list")
+    seen: set[str] = set()
+    mismatched: list[str] = []
+    for sample in samples:
+        _check_fixture_sample(sample, seen=seen)
+        try:
+            blob = (pack_dir / sample["text_file"]).read_bytes()
+        except OSError as e:
+            raise FixturePackError(
+                f"sample {sample['id']!r}: cannot read {sample['text_file']}: {e}"
+            ) from e
+        if hashlib.sha256(blob).hexdigest() != sample["sha256"]:
+            mismatched.append(sample["id"])
+    if mismatched:
+        raise FixturePackError(f"text files fail their manifest sha256: {', '.join(mismatched)}")
+    return manifest
+
+
+def _fixture_row(sample: dict[str, Any], variant: str, out_text: str, *, panoptes: Any) -> dict:
+    """Score one pack sample's (possibly transformed) text with both family
+    detectors: zero-width carriers via this repo's own inspect_text, KGW
+    demo-key via the Panoptes workbench when configured."""
+    row: dict[str, Any] = {
+        "id": sample["id"],
+        "family": sample["family"],
+        "variant": variant,
+        "expected": sample["expected"],
+        "unicode_present": inspect_text(out_text).suspicious_total > 0,
+        "notes": [],
+    }
+    if panoptes is None:
+        row["kgw"] = None
+        row["notes"].append(
+            "panoptes detector not configured; KGW scoring skipped (set PANOPTES_API_URL)"
+        )
+        return row
+    rep = panoptes.detect(out_text)
+    row["kgw"] = rep
+    if not rep.get("available"):
+        row["notes"].append(f"panoptes unavailable: {rep.get('error', 'unknown error')}")
+    return row
+
+
+def _fixture_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per (family, variant) retention rates, plus the manifest's expected
+    pre-removal rates for comparison."""
+    out: dict[str, dict[str, Any]] = {}
+    for family in FIXTURE_FAMILIES:
+        for variant in ("control", "layer-a"):
+            group = [r for r in rows if r["family"] == family and r["variant"] == variant]
+            if not group:
+                continue
+            kgw_reports = [(r.get("kgw") or {}) for r in group]
+            kgw_avail = [rep for rep in kgw_reports if rep.get("available")]
+            ai = [
+                rep["ai_generation"]
+                for rep in kgw_avail
+                if isinstance(rep.get("ai_generation"), (int, float))
+            ]
+            out[f"{family}/{variant}"] = {
+                "n": len(group),
+                "unicode_present_rate": round(_mean([r["unicode_present"] for r in group]), 4),
+                "expected_unicode_rate": round(
+                    _mean([r["expected"]["unicode_present"] for r in group]), 4
+                ),
+                "expected_kgw_rate": round(
+                    _mean([r["expected"]["kgw_detectable"] for r in group]), 4
+                ),
+                "kgw_available": len(kgw_avail),
+                "kgw_positive_rate": (
+                    round(_mean([bool(rep.get("is_watermarked")) for rep in kgw_avail]), 4)
+                    if kgw_avail
+                    else None
+                ),
+                "mean_ai_generation": round(_mean(ai), 4) if ai else None,
+            }
+    return out
+
+
+def _fixture_mismatches(rows: list[dict[str, Any]]) -> list[str]:
+    """Control rows whose measurement disagrees with the manifest's expected
+    block — a drifted pack or a changed local detector, never a good sign."""
+    bad: list[str] = []
+    for r in rows:
+        if r["variant"] != "control":
+            continue
+        if bool(r["unicode_present"]) != r["expected"]["unicode_present"]:
+            bad.append(f"{r['id']}: unicode_present")
+        rep = r.get("kgw") or {}
+        if (
+            rep.get("available")
+            and "is_watermarked" in rep
+            and bool(rep["is_watermarked"]) != r["expected"]["kgw_detectable"]
+        ):
+            bad.append(f"{r['id']}: kgw_detectable")
+    return bad
+
+
+def render_fixtures_markdown(
+    config: dict[str, Any],
+    pack: dict[str, Any],
+    rows: list[dict[str, Any]],
+    summary: dict[str, dict[str, Any]],
+    mismatches: list[str],
+    *,
+    panoptes_configured: bool,
+) -> str:
+    L: list[str] = []
+    L.append(f"# SynthID-text benchmark — fixture pack {config['tag']}")
+    L.append("")
+    L.append(f"- Date: {config['timestamp']}")
+    L.append(f"- watermarks-remover commit: {config.get('repo_commit') or 'unknown'}")
+    L.append(f"- Pack: {config['fixtures']} (schema {pack['schema']})")
+    L.append(f"- Source card sha256: {pack['source_card_sha256']}")
+    L.append(
+        f"- Samples: {pack['n_samples']} ("
+        + ", ".join(
+            f"{fam} {sum(1 for s in pack['samples'] if s['family'] == fam)}"
+            for fam in FIXTURE_FAMILIES
+        )
+        + ")"
+    )
+    L.append("")
+    L.append(
+        "Each pack sample was scored before (control row) and after a Layer A "
+        "Unicode scrub (layer-a row). Zero-width carriers are measured with this "
+        "repo's own inspect_text; the KGW demo-key family is scored by a Panoptes "
+        "workbench (PANOPTES_API_URL). No MarkLLM run is involved — the pack "
+        "arrives with measured expectations pinned by sha256."
+    )
+    L.append("")
+    L.append("## Per-family retention")
+    L.append("")
+    L.append("| Family | Variant | n | Unicode present | KGW+ (demo key) | AI posterior μ |")
+    L.append("| --- | --- | ---: | ---: | ---: | ---: |")
+    for key, s in summary.items():
+        family, variant = key.split("/")
+        kgw_cell = _fmt(s["kgw_positive_rate"]) if s["kgw_available"] else "n/a (detector offline)"
+        L.append(
+            f"| {family} | {variant} | {s['n']} | {_fmt(s['unicode_present_rate'])} "
+            f"| {kgw_cell} | {_fmt(s['mean_ai_generation'])} |"
+        )
+    L.append("")
+    L.append("Expected pre-removal rates from the manifest (per family):")
+    L.append("")
+    L.append("| Family | expected unicode | expected KGW |")
+    L.append("| --- | ---: | ---: |")
+    for family in FIXTURE_FAMILIES:
+        s = summary.get(f"{family}/control")
+        if s:
+            L.append(
+                f"| {family} | {_fmt(s['expected_unicode_rate'])} | {_fmt(s['expected_kgw_rate'])} |"
+            )
+    L.append("")
+    if mismatches:
+        L.append(
+            f"**WARNING: {len(mismatches)} control-row measurement(s) disagree with the "
+            "manifest's expected block** — the pack or the local detectors drifted: "
+            + ", ".join(mismatches[:10])
+            + (" …" if len(mismatches) > 10 else "")
+        )
+    else:
+        L.append("All control-row measurements match the manifest's expected block.")
+    L.append("")
+    if not panoptes_configured:
+        L.append(
+            "**KGW family not scored:** no Panoptes workbench configured. Set "
+            "PANOPTES_API_URL (e.g. http://127.0.0.1:8000 from `panoptes up`) and "
+            "rerun; the unicode family above is complete without it."
+        )
+        L.append("")
+    L.append("## Reproduction")
+    L.append("")
+    L.append("    " + config["command"])
+    L.append("")
+    L.append("Full per-row data: results.json / results.csv in this directory.")
+    L.append("")
+    return "\n".join(L) + "\n"
+
+
+def run_fixtures_mode(args: argparse.Namespace, *, panoptes: Any = None) -> int:
+    """--fixtures entry point: per-family retention on a pinned pack.
+
+    Runs control + layer-a rows only — Layer B rewrite evaluation is
+    MarkLLM-entangled by design, and this mode deliberately skips MarkLLM.
+    ``panoptes`` is injectable for tests; None constructs the env-configured
+    detector.
+    """
+    if panoptes is None:
+        panoptes = PanoptesTextDetector()
+    panoptes_configured = panoptes.available()
+    if not panoptes_configured:
+        eprint("fixtures: PANOPTES_API_URL not set; KGW family rows will record a skip note")
+    # Unconfigured detector => clean per-row skip notes; a configured but
+    # failing workbench => per-row unavailable reports (never fatal).
+    panoptes_active = panoptes if panoptes_configured else None
+
+    pack = load_fixture_pack(args.fixtures)
+    out_dir = args.out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = args.tag or f"fixtures-{time.strftime('%Y%m%d-%H%M%S')}"
+    config = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "tag": tag,
+        "repo_commit": _repo_commit(),
+        "mode": "fixtures",
+        "fixtures": str(args.fixtures),
+        "panoptes_configured": panoptes_configured,
+        "command": " ".join(
+            [
+                "python3 service/scripts/bench_synthid_text.py",
+                f"--fixtures {args.fixtures}",
+                f"--out-dir {args.out_dir}",
+                f"--tag {tag}",
+            ]
+        ),
+    }
+
+    rows: list[dict[str, Any]] = []
+    samples = pack["samples"]
+    for done, sample in enumerate(samples, start=1):
+        text = (Path(args.fixtures) / sample["text_file"]).read_text(encoding="utf-8")
+        rows.append(_fixture_row(sample, "control", text, panoptes=panoptes_active))
+        layer_a_text, _stats = clean_text(text)
+        rows.append(_fixture_row(sample, "layer-a", layer_a_text, panoptes=panoptes_active))
+        eprint(f"[fixtures {done}/{len(samples)}] {sample['id']} ({sample['family']})")
+
+    summary = _fixture_summary(rows)
+    mismatches = _fixture_mismatches(rows)
+    report = render_fixtures_markdown(
+        config, pack, rows, summary, mismatches, panoptes_configured=panoptes_configured
+    )
+
+    csv_buf = io.StringIO()
+    writer = csv.writer(csv_buf, lineterminator="\n")
+    writer.writerow(
+        [
+            "id",
+            "family",
+            "variant",
+            "unicode_present",
+            "expected_unicode",
+            "expected_kgw",
+            "kgw_available",
+            "kgw_pos",
+            "kgw_z",
+            "kgw_p_value",
+            "ai_generation",
+            "notes",
+        ]
+    )
+    for r in rows:
+        rep = r.get("kgw") or {}
+        kgw_detail = rep.get("kgw") or {}
+        kgw_pos = rep.get("is_watermarked")
+        writer.writerow(
+            [
+                r["id"],
+                r["family"],
+                r["variant"],
+                1 if r["unicode_present"] else 0,
+                1 if r["expected"]["unicode_present"] else 0,
+                1 if r["expected"]["kgw_detectable"] else 0,
+                1 if rep.get("available") else 0,
+                "" if kgw_pos is None else (1 if kgw_pos else 0),
+                rep.get("score") if rep.get("available") else "",
+                kgw_detail.get("p_value") if rep.get("available") else "",
+                rep.get("ai_generation") if rep.get("available") else "",
+                "; ".join(str(n) for n in r["notes"]),
+            ]
+        )
+
+    (out_dir / "report.md").write_text(report, encoding="utf-8")
+    (out_dir / "results.json").write_text(
+        json.dumps(
+            {
+                "meta": config,
+                "pack": {
+                    "schema": pack["schema"],
+                    "created_utc": pack["created_utc"],
+                    "source_card_sha256": pack["source_card_sha256"],
+                    "n_samples": pack["n_samples"],
+                },
+                "rows": rows,
+                "family_summary": summary,
+                "expectation_mismatches": mismatches,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (out_dir / "results.csv").write_text(csv_buf.getvalue(), encoding="utf-8")
+
+    eprint("")
+    eprint(f"results written to {out_dir}/")
+    print("")
+    print("family/variant      n  unicode  kgw+   aiμ")
+    print("-" * 52)
+    for key, s in summary.items():
+        kgw_cell = _fmt(s["kgw_positive_rate"]) if s["kgw_available"] else "n/a"
+        print(
+            f"{key:<18} {s['n']:>3}  {_fmt(s['unicode_present_rate']):>7}  "
+            f"{kgw_cell:>5}  {_fmt(s['mean_ai_generation']):>5}"
+        )
+    if mismatches:
+        print(f"\nWARNING: {len(mismatches)} expectation mismatch(es); see report.md")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1179,6 +1616,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--restamp-control", action="store_true", help="Also rewrite the unwatermarked control"
+    )
+    p.add_argument(
+        "--fixtures",
+        type=Path,
+        default=None,
+        metavar="PACK_DIR",
+        help="Fixture-pack mode: skip MarkLLM entirely and measure per-family "
+        "retention on a panoptes-watermark-fixtures-v1 pack (control + layer-a "
+        "rows only; see docs/synthid-text-benchmark.md). KGW family scoring "
+        "needs PANOPTES_API_URL and is skipped with a note otherwise.",
+    )
+    p.add_argument(
+        "--cross-detect",
+        action="append",
+        choices=sorted(CROSS_DETECTORS),
+        default=None,
+        metavar="DETECTOR",
+        help="Also score every row's output text with an independent detector "
+        f"({', '.join(sorted(CROSS_DETECTORS))}); repeatable. panoptes needs "
+        "PANOPTES_API_URL (e.g. http://127.0.0.1:8000 from `panoptes up`). "
+        "Control rows double as the pre-removal baseline.",
     )
     p.add_argument("--out-dir", type=Path, default=Path("bench-synthid-text-results"))
     p.add_argument("--tag", default="", help="Short label for the report")
@@ -1239,6 +1697,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
+    if args.fixtures is not None:
+        try:
+            return run_fixtures_mode(args)
+        except FixturePackError as e:
+            eprint(f"error: {e}")
+            return 2
+
     if not args.markllm_dir:
         eprint("error: --markllm-dir (or MARKLLM_DIR) is required")
         return 2
@@ -1286,6 +1751,7 @@ def main() -> int:
         "rewrite_temperature": args.rewrite_temperature,
         "rewrite_loops": args.rewrite_loops,
         "restamp_control": args.restamp_control,
+        "cross_detect": args.cross_detect or [],
         "chars_per_token": args.chars_per_token,
         "cost_per_mtok_in": args.cost_per_mtok_in,
         "cost_per_mtok_out": args.cost_per_mtok_out,
@@ -1305,6 +1771,7 @@ def main() -> int:
                 f"--rewrite-temperature {args.rewrite_temperature}",
                 f"--rewrite-loops {args.rewrite_loops}",
                 *(["--restamp-control"] if args.restamp_control else []),
+                *[f"--cross-detect {name}" for name in (args.cross_detect or [])],
                 *(["--rewrite-allow-remote"] if args.rewrite_allow_remote else []),
                 f"--out-dir {args.out_dir}",
                 f"--tag {tag}",
@@ -1336,11 +1803,15 @@ def main() -> int:
     agg = aggregate(rows, bench.variants)
 
     report = render_markdown(config, samples, rows, agg)
-    csv_lines = [
+    cross_names = [d.name for d in bench.cross]
+    csv_header = (
         "doc,seed,variant,kind,attempts,evaluator,passed,before_pos,after_pos,cleared,"
         "score_before,score_after,score_delta,lexical_divergence,length_ratio,"
         "numbers_preserved,urls_preserved,tokens_in,tokens_out,seconds,usd,notes"
-    ]
+    )
+    for name in cross_names:
+        csv_header += f",cross_{name}_pos,cross_{name}_score,cross_{name}_ai"
+    csv_lines = [csv_header]
     for r in rows:
         q = r.get("quality") or {}
         delta = (
@@ -1348,6 +1819,17 @@ def main() -> int:
             if r.get("score_before") is not None and r.get("score_after") is not None
             else ""
         )
+        cross_cells: list[Any] = []
+        for name in cross_names:
+            rep = (r.get("cross") or {}).get(name) or {}
+            pos = rep.get("is_watermarked")
+            score = rep.get("score")
+            ai = rep.get("ai_generation")
+            cross_cells += [
+                "" if pos is None else (1 if pos else 0),
+                "" if score is None else score,
+                "" if ai is None else ai,
+            ]
         csv_lines.append(
             ",".join(
                 str(v)
@@ -1374,6 +1856,7 @@ def main() -> int:
                     r.get("seconds", ""),
                     round(r.get("usd") or 0.0, 6),
                     "; ".join(str(n) for n in r.get("notes") or []),
+                    *cross_cells,
                 )
             )
         )

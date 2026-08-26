@@ -9,8 +9,10 @@ controls, and the JSON/CSV/Markdown outputs.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -60,6 +62,8 @@ def _args(**overrides):
         no_worker=True,
         scheme="synthid",
         config=None,
+        cross_detect=None,
+        fixtures=None,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -109,6 +113,24 @@ def _rewrite_stats(cleared=True, evaluator="markllm", attempts_made=1, passed=Tr
         "output_chars": 100,
         "candidate_scores": [],
     }
+
+
+class _FakeCrossDetector:
+    """Deterministic stand-in for a --cross-detect second-opinion detector."""
+
+    name = "panoptes"
+
+    def available(self):
+        return True
+
+    def detect(self, text):
+        return {
+            "detector": self.name,
+            "available": True,
+            "is_watermarked": False,
+            "score": 0.05,
+            "ai_generation": 0.42,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +347,57 @@ def test_restamp_control_rows(tmp_path, monkeypatch):
     assert restamps[0]["after_pos"] in (True, False)
 
 
+def test_cross_detect_flag_parsing():
+    base = ["--markllm-dir", "x", "--rewrite-model", "m"]
+    assert bench.build_parser().parse_args(base).cross_detect is None
+    args = bench.build_parser().parse_args([*base, "--cross-detect", "panoptes"])
+    assert args.cross_detect == ["panoptes"]
+    with pytest.raises(SystemExit):
+        bench.build_parser().parse_args([*base, "--cross-detect", "bogus"])
+
+
+def test_cross_detect_populates_rows_and_aggregate(tmp_path, monkeypatch):
+    b, _ = _make_bench(
+        tmp_path, monkeypatch, docs=1, variants="paraphrase:1", cross_detect=["panoptes"]
+    )
+    monkeypatch.setattr(b, "cross", [_FakeCrossDetector()])
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    scored = [r for r in rows if r["kind"] in ("control", "layer-a", "rewrite")]
+    assert scored and all("cross" in r for r in scored)
+    assert all(r["cross"]["panoptes"]["ai_generation"] == 0.42 for r in scored)
+    agg = aggregate(rows, b.variants)
+    cross = agg["control"]["cross_panoptes"]
+    assert cross["n_available"] == 1
+    assert cross["kgw_positive"] == 0
+    assert cross["mean_ai_generation"] == 0.42
+
+
+def test_cross_detect_records_fail_soft(tmp_path, monkeypatch):
+    """With no Panoptes server reachable, rows record the reason — never crash."""
+    monkeypatch.delenv("PANOPTES_API_URL", raising=False)
+    b, _ = _make_bench(
+        tmp_path, monkeypatch, docs=1, variants="paraphrase:1", cross_detect=["panoptes"]
+    )
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    control = next(r for r in rows if r["kind"] == "control")
+    report = control["cross"]["panoptes"]
+    assert report["available"] is False
+    assert "PANOPTES_API_URL" in report["error"]
+    agg = aggregate(rows, b.variants)
+    assert agg["control"]["cross_panoptes"]["n_available"] == 0
+
+
+def test_cross_detect_off_leaves_rows_untouched(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    assert all("cross" not in r for r in rows)
+    agg = aggregate(rows, b.variants)
+    assert all(not k.startswith("cross_") for v in agg.values() for k in v)
+
+
 # ---------------------------------------------------------------------------
 # Outputs via main()
 # ---------------------------------------------------------------------------
@@ -337,6 +410,7 @@ class _FakeBench:
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
+        self.cross = [_FakeCrossDetector() for _ in (args.cross_detect or [])]
 
     def close_worker(self):
         pass
@@ -356,7 +430,7 @@ class _FakeBench:
         ]
 
     def run_variants(self, samples, workdir):
-        return [
+        rows = [
             {
                 "doc": "d1",
                 "seed": 1,
@@ -418,6 +492,10 @@ class _FakeBench:
                 "notes": [],
             },
         ]
+        for r in rows:
+            if self.cross:
+                r["cross"] = {d.name: d.detect("x") for d in self.cross}
+        return rows
 
 
 def test_main_writes_outputs(tmp_path, monkeypatch, capsys):
@@ -464,6 +542,58 @@ def test_main_writes_outputs(tmp_path, monkeypatch, capsys):
     csv = (out / "results.csv").read_text(encoding="utf-8")
     assert "doc,seed,variant" in csv
     assert "rewrite-paraphrase:1" in csv
+    # No --cross-detect: outputs keep the legacy shape (no cross columns/sections).
+    assert "cross_" not in csv.splitlines()[0]
+    assert "Cross-detector second opinion" not in report
+
+
+def test_main_cross_detect_extends_outputs(tmp_path, monkeypatch, capsys):
+    (tmp_path / "markllm" / "watermark").mkdir(parents=True)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "d1.txt").write_text("prompt", encoding="utf-8")
+    out = tmp_path / "out"
+    monkeypatch.setattr(bench, "Benchmark", _FakeBench)
+    monkeypatch.setattr(bench, "_repo_commit", lambda: "abc123")
+    monkeypatch.setattr(bench, "_markllm_commit", lambda upstream: "def456")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_synthid_text.py",
+            "--markllm-dir",
+            str(tmp_path / "markllm"),
+            "--corpus",
+            str(corpus),
+            "--docs",
+            "1",
+            "--rewrite-model",
+            "llama3.2",
+            "--variants",
+            "paraphrase:1",
+            "--cross-detect",
+            "panoptes",
+            "--out-dir",
+            str(out),
+            "--tag",
+            "ci-cross",
+        ],
+    )
+    assert bench.main() == 0
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "## Cross-detector second opinion: panoptes" in report
+    assert "demo key" in report  # KGW scoping caveat is rendered
+    assert "--cross-detect panoptes" in report  # reproduction command records the flag
+    csv = (out / "results.csv").read_text(encoding="utf-8")
+    header = csv.splitlines()[0]
+    assert header.endswith(",cross_panoptes_pos,cross_panoptes_score,cross_panoptes_ai")
+    rewrite_line = next(line for line in csv.splitlines() if "rewrite-paraphrase:1" in line)
+    assert rewrite_line.endswith(",0,0.05,0.42")  # pos=0, score, AI posterior
+    data = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert data["meta"]["cross_detect"] == ["panoptes"]
+    cross = data["aggregates"]["control"]["cross_panoptes"]
+    assert cross["n_available"] == 1
+    assert cross["mean_ai_generation"] == 0.42
 
 
 def test_main_requires_markllm_dir(tmp_path, monkeypatch, capsys):
@@ -684,3 +814,238 @@ def test_run_cmd_no_rlimit_preexec(monkeypatch):
 
     b._run_cmd(["echo", "hi"], timeout=5)
     assert "preexec_fn" not in calls["kwargs"]
+
+
+# ---------------------------------------------------------------------------
+# Fixture-pack mode (--fixtures)
+# ---------------------------------------------------------------------------
+
+FIXTURE_PACK = ROOT / "tests" / "fixtures" / "panoptes-pack"
+# The pack's unicode family carries its mark in ZWSP/ZWNJ, one per word.
+_ZERO_WIDTH = chr(0x200B) + chr(0x200C)
+
+
+class _FakePackPanoptes:
+    """Panoptes double answering KGW from the pack's own expected blocks.
+
+    Keyed on exact pack text. clean_text is the identity on this pack's
+    control/kgw texts and maps unicode texts onto their control counterparts,
+    so layer-a rows resolve correctly too. A lookup miss raises — an unknown
+    text is a test bug, not a negative.
+    """
+
+    def __init__(self, pack_dir: Path):
+        manifest = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8"))
+        self._by_text = {}
+        for s in manifest["samples"]:
+            text = (pack_dir / s["text_file"]).read_text(encoding="utf-8")
+            self._by_text[text] = s["expected"]["kgw_detectable"]
+
+    def available(self):
+        return True
+
+    def detect(self, text):
+        if text not in self._by_text:
+            raise AssertionError(f"fake panoptes got unknown text: {text[:60]!r}")
+        positive = self._by_text[text]
+        return {
+            "detector": "panoptes",
+            "available": True,
+            "is_watermarked": positive,
+            "score": 3.5 if positive else 0.1,
+            "kgw": {
+                "status": "tested",
+                "z": 3.5 if positive else 0.1,
+                "p_value": 0.001 if positive else 0.45,
+            },
+            "ai_generation": 0.5,
+            "ai_participation": 0.55,
+            "note": "fake",
+        }
+
+
+def _run_fixtures(tmp_path, monkeypatch, panoptes, pack_dir=FIXTURE_PACK):
+    monkeypatch.setattr(bench, "_repo_commit", lambda: "abc123")
+    args = _args(fixtures=pack_dir, out_dir=tmp_path / "out", tag="ci-fixtures")
+    rc = bench.run_fixtures_mode(args, panoptes=panoptes)
+    return rc, args.out_dir
+
+
+def test_fixture_pack_committed_is_valid():
+    """The committed CI pack passes the same validation the bench applies."""
+    manifest = bench.load_fixture_pack(FIXTURE_PACK)
+    assert manifest["schema"] == "panoptes-watermark-fixtures-v1"
+    assert manifest["n_samples"] == 9
+    counts = {fam: 0 for fam in bench.FIXTURE_FAMILIES}
+    for s in manifest["samples"]:
+        counts[s["family"]] += 1
+    assert counts == {"control": 3, "kgw": 3, "unicode": 3}
+
+
+def test_fixtures_happy_path(tmp_path, monkeypatch):
+    rc, out_dir = _run_fixtures(tmp_path, monkeypatch, _FakePackPanoptes(FIXTURE_PACK))
+    assert rc == 0
+    data = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
+    rows = data["rows"]
+    assert len(rows) == 18  # 9 samples x (control, layer-a)
+    assert data["expectation_mismatches"] == []
+
+    def by(fam, var):
+        return [r for r in rows if r["family"] == fam and r["variant"] == var]
+
+    # Unicode family: mark present pre-removal, gone after Layer A.
+    assert all(r["unicode_present"] for r in by("unicode", "control"))
+    assert not any(r["unicode_present"] for r in by("unicode", "layer-a"))
+    # KGW family: demo-key mark survives the Unicode scrub.
+    assert all(r["kgw"]["is_watermarked"] for r in by("kgw", "control"))
+    assert all(r["kgw"]["is_watermarked"] for r in by("kgw", "layer-a"))
+    # Control family: no unicode mark before or after.
+    assert not any(r["unicode_present"] for r in by("control", "control"))
+    assert not any(r["unicode_present"] for r in by("control", "layer-a"))
+
+    summary = data["family_summary"]
+    assert summary["unicode/control"]["unicode_present_rate"] == 1.0
+    assert summary["unicode/layer-a"]["unicode_present_rate"] == 0.0
+    assert summary["kgw/control"]["kgw_positive_rate"] == 1.0
+    assert summary["kgw/layer-a"]["kgw_positive_rate"] == 1.0
+    assert summary["control/control"]["kgw_available"] == 3
+
+    report = (out_dir / "report.md").read_text(encoding="utf-8")
+    assert "## Per-family retention" in report
+    assert "All control-row measurements match the manifest's expected block." in report
+    assert "panoptes-watermark-fixtures-v1" in report
+
+    csv = (out_dir / "results.csv").read_text(encoding="utf-8")
+    assert csv.splitlines()[0].startswith("id,family,variant,unicode_present,")
+    unicode_layer_a = next(
+        line for line in csv.splitlines() if line.startswith("unicode-000,unicode,layer-a,")
+    )
+    # Mark scrubbed (0) though expected present (1); KGW expected absent (0) and
+    # the scrubbed text resolves to control-000, which the fake scores negative.
+    assert unicode_layer_a == "unicode-000,unicode,layer-a,0,1,0,1,0,0.1,0.45,0.5,"
+
+
+def test_fixtures_tampered_file_refused(tmp_path, monkeypatch, capsys):
+    pack_copy = tmp_path / "pack"
+    shutil.copytree(FIXTURE_PACK, pack_copy)
+    target = pack_copy / "texts" / "kgw-000.txt"
+    blob = bytearray(target.read_bytes())
+    blob[0] ^= 0x01
+    target.write_bytes(bytes(blob))
+    with pytest.raises(bench.FixturePackError, match="kgw-000"):
+        bench.load_fixture_pack(pack_copy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench_synthid_text.py", "--fixtures", str(pack_copy), "--out-dir", str(tmp_path / "o")],
+    )
+    assert bench.main() == 2
+    assert "sha256" in capsys.readouterr().err
+
+
+def test_fixtures_missing_text_file_refused(tmp_path, monkeypatch, capsys):
+    pack_copy = tmp_path / "pack"
+    shutil.copytree(FIXTURE_PACK, pack_copy)
+    (pack_copy / "texts" / "kgw-000.txt").unlink()
+    with pytest.raises(bench.FixturePackError, match="cannot read"):
+        bench.load_fixture_pack(pack_copy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench_synthid_text.py", "--fixtures", str(pack_copy), "--out-dir", str(tmp_path / "o")],
+    )
+    assert bench.main() == 2
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_fixtures_csv_quotes_notes_with_commas(tmp_path, monkeypatch):
+    """Detector error text containing commas must not break the 12-column CSV."""
+
+    class _CommaErrorPanoptes:
+        def available(self):
+            return True
+
+        def detect(self, text):
+            return {"available": False, "error": "connection refused, retry later"}
+
+    rc, out_dir = _run_fixtures(tmp_path, monkeypatch, _CommaErrorPanoptes())
+    assert rc == 0
+    with (out_dir / "results.csv").open(newline="", encoding="utf-8") as fh:
+        parsed = list(csv.reader(fh))
+    assert parsed[0] == [
+        "id",
+        "family",
+        "variant",
+        "unicode_present",
+        "expected_unicode",
+        "expected_kgw",
+        "kgw_available",
+        "kgw_pos",
+        "kgw_z",
+        "kgw_p_value",
+        "ai_generation",
+        "notes",
+    ]
+    assert all(len(row) == 12 for row in parsed[1:])
+    assert any("connection refused, retry later" in row[11] for row in parsed[1:])
+
+
+def test_fixtures_unknown_schema_rejected(tmp_path):
+    pack_copy = tmp_path / "pack"
+    shutil.copytree(FIXTURE_PACK, pack_copy)
+    manifest_path = pack_copy / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema"] = "panoptes-watermark-fixtures-v2"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(bench.FixturePackError, match="unsupported pack schema"):
+        bench.load_fixture_pack(pack_copy)
+
+
+def test_fixtures_kgw_skipped_with_note_when_unconfigured(tmp_path, monkeypatch):
+    monkeypatch.delenv("PANOPTES_API_URL", raising=False)
+    from text_detectors import PanoptesTextDetector
+
+    rc, out_dir = _run_fixtures(tmp_path, monkeypatch, PanoptesTextDetector())
+    assert rc == 0
+    data = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
+    assert all(r["kgw"] is None for r in data["rows"])
+    assert all(any("PANOPTES_API_URL" in n for n in r["notes"]) for r in data["rows"])
+    # The unicode family is fully measured without the workbench.
+    assert data["family_summary"]["unicode/layer-a"]["unicode_present_rate"] == 0.0
+    assert data["family_summary"]["kgw/control"]["kgw_positive_rate"] is None
+    report = (out_dir / "report.md").read_text(encoding="utf-8")
+    assert "KGW family not scored" in report
+    assert "n/a (detector offline)" in report
+
+
+def test_fixtures_mode_needs_no_markllm(tmp_path, monkeypatch):
+    """--fixtures dispatches before the MarkLLM/rewrite requirement checks."""
+    monkeypatch.delenv("PANOPTES_API_URL", raising=False)
+    monkeypatch.setattr(bench, "_repo_commit", lambda: "abc123")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_synthid_text.py",
+            "--fixtures",
+            str(FIXTURE_PACK),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--tag",
+            "ci-fixtures",
+        ],
+    )
+    assert bench.main() == 0
+    assert (tmp_path / "out" / "report.md").is_file()
+
+
+def test_fixtures_missing_pack_dir_is_usage_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["bench_synthid_text.py", "--fixtures", str(tmp_path / "nope"), "--out-dir", "x"],
+    )
+    assert bench.main() == 2
+    assert "no manifest.json" in capsys.readouterr().err

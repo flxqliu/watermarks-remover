@@ -100,6 +100,8 @@ def _clean_env(monkeypatch):
         "WATERMARKS_SYNTHID_SCORER_URL",
         "WATERMARKS_SYNTHID_SCORER_API_KEY",
         "MARKLLM_DIR",
+        "PANOPTES_API_URL",
+        "PANOPTES_TIMEOUT",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -107,7 +109,7 @@ def _clean_env(monkeypatch):
 def test_capabilities_exposes_detectors(conn):
     status, body = _get(conn, "/capabilities")
     assert status == 200
-    assert set(body["text_detectors"]) == {"markllm", "gumbel", "claude-text"}
+    assert set(body["text_detectors"]) == {"markllm", "gumbel", "claude-text", "panoptes"}
     assert "synthid_http" in body["scorers"]
 
 
