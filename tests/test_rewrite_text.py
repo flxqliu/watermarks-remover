@@ -584,6 +584,35 @@ def test_strength_chunk_reassembles_fragments(monkeypatch):
     assert out == "RE: First sentence. RE: Second sentence!\n\nRE: Third paragraph?"
 
 
+def test_strength_chunk_leading_blank_line_kept(monkeypatch):
+    calls = []
+
+    def fake_ollama(base_url, model, prompt, timeout, temperature):
+        calls.append(prompt.split("---")[-1].strip())
+        return "RE: " + prompt.split("---")[-1].strip()
+
+    monkeypatch.setattr(rewrite_text, "call_ollama", fake_ollama)
+    # A blank line at the top is a separator, not a fragment: it must not be
+    # sent to the backend, but unshuffled mode keeps it in the reassembly.
+    text = "\n\nFirst sentence. Second sentence!"
+    out, _ = rewrite(
+        text,
+        backend="ollama",
+        model="m",
+        base_url="http://127.0.0.1:11434",
+        api_key=None,
+        strength="chunk",
+        lang="French",
+        original_lang="English",
+        timeout=5.0,
+        layer_a_after=False,
+        temperature=0.9,
+        candidates=1,
+    )
+    assert calls == ["First sentence.", "Second sentence!"]
+    assert out == "\n\nRE: First sentence. RE: Second sentence!"
+
+
 def test_strength_chunk_shuffle_reorders_fragments(monkeypatch):
     calls = []
 

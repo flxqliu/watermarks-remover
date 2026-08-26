@@ -552,11 +552,13 @@ def rewrite(
     def _generate_candidate() -> str:
         if is_chunk:
             pairs = _split_units(text)
-            units = [unit for unit, _ in pairs]
             if chunk_shuffle:
+                units = [unit for unit, _ in pairs if unit]
                 random.shuffle(units)
                 return " ".join(_rewrite_unit(unit) for unit in units)
-            return "".join(_rewrite_unit(unit) + sep for unit, sep in pairs)
+            # Skip rewriting empty leading units (blank lines at the top) but
+            # keep their separators so the reassembled document keeps the layout.
+            return "".join((_rewrite_unit(unit) if unit else "") + sep for unit, sep in pairs)
         return _generate_once(
             backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
         )
