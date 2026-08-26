@@ -889,7 +889,15 @@ def test_minimal_search_always_evaluates_max_level(tmp_path, monkeypatch):
 
 def test_minimal_search_rejects_bad_level_config(tmp_path, monkeypatch):
     for overrides, err in [
-        ({"rewrite_level_step": 0.0}, "--rewrite-level-step must be > 0"),
+        ({"rewrite_level_step": 0.0}, "--rewrite-level-step must be a positive finite number"),
+        (
+            {"rewrite_level_step": float("inf")},
+            "--rewrite-level-step must be a positive finite number",
+        ),
+        (
+            {"rewrite_level_step": float("nan")},
+            "--rewrite-level-step must be a positive finite number",
+        ),
         ({"rewrite_level_start": 0.0}, "must be in (0,1]"),
         ({"rewrite_level_max": 1.5}, "must be in (0,1]"),
     ]:
@@ -967,6 +975,37 @@ def test_minimal_search_target_margin_gates_tiny_clear(tmp_path, monkeypatch):
         0.9,
         1.0,
     ]
+
+
+def test_cleared_verdict_tristate(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal")
+    assert b._cleared_verdict({"available": True, "is_watermarked": False}) is True
+    assert b._cleared_verdict({"available": True, "is_watermarked": True}) is False
+    # fail-soft: unavailable detection is never a definite "still watermarked"
+    assert b._cleared_verdict({"available": False, "is_watermarked": True}) is None
+    assert b._cleared_verdict(None) is None
+    assert b._cleared_verdict({"available": True, "is_watermarked": None}) is True
+
+
+def test_minimal_search_detection_unavailable_is_excluded(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1)
+    samples = b.generate_samples(tmp_path / "work")
+
+    # Detection is fail-soft unavailable, so the after-report has no verdict.
+    monkeypatch.setattr(
+        b,
+        "_rewrite_report",
+        lambda stats, out_text: {"available": False, "is_watermarked": None},
+    )
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    # An unknown verdict is excluded (cleared=None), not reported as "not cleared".
+    assert row["cleared"] is None
+    assert "detection unavailable" in "; ".join(row["notes"])
+    # aggregate_minimal drops the unknown row from the clear-rate denominator.
+    agg = bench.aggregate_minimal(rows)
+    assert agg["n_samples"] == 0
+    assert agg["clear_rate"] is None
 
 
 def test_aggregate_minimal_means_and_usage():

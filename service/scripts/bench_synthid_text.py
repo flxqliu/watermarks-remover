@@ -34,6 +34,7 @@ import argparse
 import contextlib
 import csv
 import json
+import math
 import os
 import queue
 import re
@@ -1072,9 +1073,16 @@ class Benchmark:
             return round(float(threshold) - float(score), 4)
         return None
 
-    def _report_cleared(self, report: dict[str, Any]) -> bool:
-        """Did the after-detection report say the mark is gone?"""
-        return bool(report.get("available")) and not bool(report.get("is_watermarked"))
+    def _cleared_verdict(self, report: dict[str, Any] | None) -> bool | None:
+        """Tri-state clearance from an after-detection report.
+
+        True = report available and not watermarked (cleared); False = report
+        available and still watermarked; None = detection unavailable (fail-soft).
+        An unknown verdict is never conflated with a definite "still watermarked".
+        """
+        if not report or not report.get("available"):
+            return None
+        return not bool(report.get("is_watermarked"))
 
     def minimal_search(self, samples: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
         """For each watermarked sample, raise the rewrite level until it clears.
@@ -1090,8 +1098,8 @@ class Benchmark:
         # Validate against the (0,1] rewrite-level contract before building the
         # list: a non-positive step would loop forever, and a level outside
         # (0,1] would make every rewrite_text.py call fail at runtime.
-        if a.rewrite_level_step <= 0:
-            raise SystemExit("error: --rewrite-level-step must be > 0")
+        if not math.isfinite(a.rewrite_level_step) or a.rewrite_level_step <= 0:
+            raise SystemExit("error: --rewrite-level-step must be a positive finite number")
         if not (0 < a.rewrite_level_start <= 1) or not (0 < a.rewrite_level_max <= 1):
             raise SystemExit(
                 "error: --rewrite-level-start and --rewrite-level-max must be in (0,1]"
@@ -1140,6 +1148,7 @@ class Benchmark:
             chosen: dict[str, Any] | None = None
             level_used: float | None = None
             failed: str | None = None
+            unavailable = False
             for lvl in levels:
                 clears: list[dict[str, Any]] = []
                 for _ in range(max(1, a.level_attempts)):
@@ -1156,7 +1165,11 @@ class Benchmark:
                         failed = str(e)
                         break
                     report = self._rewrite_report(stats, out_text)
-                    if not self._report_cleared(report):
+                    verdict = self._cleared_verdict(report)
+                    if verdict is None:
+                        unavailable = True
+                        continue
+                    if not verdict:
                         continue
                     margin = self._score_margin(report)
                     # A clear by a hair is not a robust removal: require the
@@ -1202,15 +1215,26 @@ class Benchmark:
                     }
                 )
             elif chosen is None:
-                row.update(
-                    {
-                        "cleared": False,
-                        "level": levels[-1],
-                        "lexical_divergence": None,
-                        "semantic_divergence": None,
-                        "notes": ["not cleared at any level"],
-                    }
-                )
+                if unavailable:
+                    row.update(
+                        {
+                            "cleared": None,
+                            "level": levels[-1],
+                            "lexical_divergence": None,
+                            "semantic_divergence": None,
+                            "notes": ["detection unavailable; not verified"],
+                        }
+                    )
+                else:
+                    row.update(
+                        {
+                            "cleared": False,
+                            "level": levels[-1],
+                            "lexical_divergence": None,
+                            "semantic_divergence": None,
+                            "notes": ["not cleared at any level"],
+                        }
+                    )
             else:
                 row.update(
                     {
