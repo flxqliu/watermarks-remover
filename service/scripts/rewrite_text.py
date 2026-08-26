@@ -27,6 +27,12 @@ attempts are generated and the most diverged one is selected). A vendor-detector
 seam (Google's retired SynthID-text detector) is reserved ahead of the
 same-config detectors should a vendor endpoint return.
 
+The rewrite instruction comes from --strength (a named prompt) or, when
+--rewrite-level is set, a numeric rewrite intensity in (0,1] that controls how
+many tokens change (0 — the unchanged original — is excluded; 1 rewrites
+everything). The level is a request: output lexical/semantic divergence is
+measured, not guaranteed.
+
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
     Authorization header (API key) can never be re-sent to an unvalidated host.
@@ -93,6 +99,16 @@ PROMPTS = {
     "structural_write": (
         "Write a complete document from this outline in natural, varied human prose. "
         "Avoid formulaic transitions. Do not omit any bullet. Output only the document."
+        "\n\n---\n{TEXT}"
+    ),
+    "level": (
+        "Rewrite the following text so that a fraction of the tokens close to "
+        "{LEVEL:.2f} changes — 0 would mean the wording is kept unchanged, 1 means "
+        "everything is rewritten. At low values keep the sentence structure, word "
+        "order, and every token that can stay, changing only function words and a "
+        "few non-essential content words. At high values change wording substantially "
+        "at the token level. Preserve all facts, numbers, names, and technical "
+        "identifiers. Do not add or remove claims. Output only the rewritten text."
         "\n\n---\n{TEXT}"
     ),
 }
@@ -245,7 +261,16 @@ def _generate_once(
     raise SystemExit(f"unknown backend: {backend}")
 
 
-def build_prompt(strength: str, text: str, *, lang: str, original_lang: str) -> str:
+def build_prompt(
+    strength: str,
+    text: str,
+    *,
+    lang: str,
+    original_lang: str,
+    rewrite_level: float | None = None,
+) -> str:
+    if rewrite_level is not None:
+        return PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
     if strength == "paraphrase":
         return PROMPTS["paraphrase"].format(TEXT=text)
     if strength == "humanize":
@@ -362,11 +387,15 @@ def rewrite(
     markllm_model: str | None = None,
     markllm_timeout: float = 180.0,
     gumbel_key: str | None = None,
+    rewrite_level: float | None = None,
 ) -> tuple[str, dict]:
-    prompt = build_prompt(strength, text, lang=lang, original_lang=original_lang)
+    prompt = build_prompt(
+        strength, text, lang=lang, original_lang=original_lang, rewrite_level=rewrite_level
+    )
     info: dict = {
         "backend": backend,
         "strength": strength,
+        "rewrite_level": rewrite_level,
         "model": model,
         "base_url": base_url,
         "temperature": temperature,
@@ -602,6 +631,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("paraphrase", "backtranslate", "structural", "humanize", "code"),
         default="paraphrase",
     )
+    p.add_argument(
+        "--rewrite-level",
+        type=float,
+        default=None,
+        help="Numeric rewrite intensity in (0,1]; 0 (the unchanged original) is "
+        "excluded. When set, overrides --strength and builds a level-based prompt "
+        "that changes a fraction of tokens close to this value. Omit to use "
+        "--strength (the benchmark's minimal mode drives this explicitly). "
+        "Planned nominal default 0.5, to be tuned from benchmark output.",
+    )
     p.add_argument("--lang", default="French", help="Pivot language for backtranslate")
     p.add_argument("--original-lang", default="English")
     p.add_argument("--timeout", type=float, default=120.0)
@@ -679,6 +718,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
+    if args.rewrite_level is not None and not (0 < args.rewrite_level <= 1):
+        eprint(f"error: --rewrite-level must be in (0,1], got {args.rewrite_level}")
+        return 2
+
     text = read_text_input(args.path, allow_binary=args.force_text)
     allow_remote = (
         args.allow_remote
@@ -707,6 +750,7 @@ def main() -> int:
             markllm_model=args.markllm_model,
             markllm_timeout=args.markllm_timeout,
             gumbel_key=args.gumbel_key,
+            rewrite_level=args.rewrite_level,
         )
     except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
         eprint(f"rewrite failed: {e}")

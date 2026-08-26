@@ -334,6 +334,7 @@ def run_rewrite(
     markllm_model: str,
     markllm_timeout: float,
     markllm_scheme: str,
+    rewrite_level: float | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Run the Layer B rewrite on *text* via rewrite_text.py (real product path).
 
@@ -383,6 +384,8 @@ def run_rewrite(
         str(markllm_timeout),
         "--json-stats",
     ]
+    if rewrite_level is not None:
+        cmd += ["--rewrite-level", str(rewrite_level)]
     if allow_remote:
         cmd.append("--allow-remote")
     try:
@@ -452,9 +455,58 @@ def _detect_positive(d: dict[str, Any] | None) -> bool:
     return bool(d and d.get("available") and d.get("is_watermarked"))
 
 
-def _quality(original: str, candidate: str, chars_per_token: float) -> dict[str, Any]:
+class SemanticEmbedder:
+    """Optional sentence-embedding semantic divergence (1 - cosine similarity).
+
+    Lazily loads a SentenceTransformer the first time it is used. Any failure —
+    package missing (sentence-transformers not installed), model download error,
+    encode error — makes ``available()`` return False and ``score()`` return None,
+    so the benchmark degrades gracefully to lexical-only output instead of failing.
+    """
+
+    def __init__(self, model_name: str) -> None:
+        self._model_name = model_name
+        self._model = None
+        self._util = None
+        self._failed: str | None = None
+
+    def _load(self):
+        if self._model is not None:
+            return self._model
+        if self._failed is not None:
+            return None
+        try:
+            from sentence_transformers import SentenceTransformer, util
+
+            self._util = util
+            self._model = SentenceTransformer(self._model_name)
+        except Exception as e:  # fail-soft: optional dependency
+            self._failed = f"sentence-transformers unavailable: {e}"
+            return None
+        return self._model
+
+    def available(self) -> bool:
+        return self._load() is not None
+
+    def score(self, original: str, candidate: str) -> float | None:
+        model = self._load()
+        if model is None:
+            return None
+        try:
+            emb = model.encode([original, candidate], normalize_embeddings=True)
+            return round(float(1.0 - self._util.cos_sim(emb[0], emb[1]).item()), 4)
+        except Exception as e:
+            self._failed = f"embedding failed: {e}"
+            return None
+
+
+def _quality(
+    original: str, candidate: str, chars_per_token: float, semantic: SemanticEmbedder | None = None
+) -> dict[str, Any]:
+    sem = semantic.score(original, candidate) if semantic is not None else None
     return {
         "lexical_divergence": round(_lexical_divergence(original, candidate), 4),
+        "semantic_divergence": sem,
         "length_ratio": round(len(candidate) / max(len(original), 1), 4),
         "numbers_preserved": round(_numbers_preserved(original, candidate), 4),
         "urls_preserved": round(_urls_preserved(original, candidate), 4),
@@ -626,6 +678,7 @@ class Benchmark:
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
+        self.semantic = SemanticEmbedder(args.semantic_model)
         self.scheme = args.scheme
         self.config = args.config
         self.worker = None
@@ -696,7 +749,12 @@ class Benchmark:
         )
 
     def rewrite(
-        self, text: str, strength: str, candidates: int, max_loops: int = 1
+        self,
+        text: str,
+        strength: str,
+        candidates: int,
+        max_loops: int = 1,
+        rewrite_level: float | None = None,
     ) -> tuple[str, dict[str, Any]]:
         a = self.args
         return run_rewrite(
@@ -717,6 +775,7 @@ class Benchmark:
             markllm_model=a.markllm_model,
             markllm_timeout=a.markllm_timeout,
             markllm_scheme=self.scheme,
+            rewrite_level=rewrite_level,
         )
 
     # -- phases ------------------------------------------------------------
@@ -910,7 +969,10 @@ class Benchmark:
                             "score_after": _score_of(after),
                             "cleared": None,
                             "quality": _quality(
-                                sample["unwatermarked"], out_text, self.chars_per_token
+                                sample["unwatermarked"],
+                                out_text,
+                                self.chars_per_token,
+                                self.semantic,
                             ),
                             "notes": (
                                 ["re-stamped by rewrite backend"]
@@ -959,7 +1021,7 @@ class Benchmark:
             "cleared": cleared,
             "after_pos": _detect_positive(after),
             "score_after": _score_of(after),
-            "quality": _quality(original, candidate, self.chars_per_token),
+            "quality": _quality(original, candidate, self.chars_per_token, self.semantic),
             "seconds": seconds,
             "usd": 0.0,
             "notes": [],
@@ -969,6 +1031,141 @@ class Benchmark:
         elif kind == "layer-a":
             row["notes"].append("Layer A only; statistical marks are expected to survive")
         return row
+
+    def _rewrite_cleared(self, stats: dict[str, Any], out_text: str) -> bool:
+        """Did the rewrite's own MarkLLM verification say the mark is gone?
+
+        Prefer the rewrite's --json-stats (already paid for, no extra model
+        load); fall back to a direct detection if the stats verdict is missing.
+        """
+        mk = (stats.get("markllm") or {}).get("after")
+        if mk and mk.get("available"):
+            return not bool(mk.get("is_watermarked"))
+        after = self.detect(out_text)
+        return bool(after.get("available")) and not bool(after.get("is_watermarked"))
+
+    def minimal_search(self, samples: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
+        """For each watermarked sample, raise the rewrite level until it clears.
+
+        Starts at ``--rewrite-level-start`` and increments by
+        ``--rewrite-level-step`` per loop (capped at ``--rewrite-level-max``).
+        At each level it tries up to ``--level-attempts`` rewrites and, if any
+        clears, keeps the one with the smallest semantic divergence and stops
+        raising the level. One row per sample records that minimal level and the
+        lexical/semantic divergence of the chosen rewrite.
+        """
+        a = self.args
+        levels: list[float] = []
+        lvl = a.rewrite_level_start
+        while lvl <= a.rewrite_level_max + 1e-9:
+            levels.append(round(lvl, 6))
+            lvl += a.rewrite_level_step
+        if not levels:
+            raise SystemExit("error: --rewrite-level-max must be >= --rewrite-level-start")
+
+        rows: list[dict[str, Any]] = []
+        for sample in samples:
+            if sample.get("excluded"):
+                rows.append(
+                    {
+                        "doc": sample["doc"],
+                        "seed": sample["seed"],
+                        "variant": "minimal",
+                        "kind": "minimal",
+                        "cleared": None,
+                        "before_pos": _detect_positive(sample["before"]),
+                        "score_before": _score_of(sample["before"]),
+                        "level": None,
+                        "lexical_divergence": None,
+                        "semantic_divergence": None,
+                        "attempts": 0,
+                        "seconds": 0.0,
+                        "notes": [sample.get("excluded_reason", "excluded")],
+                    }
+                )
+                continue
+
+            wm_text = sample["watermarked"]
+            base = {
+                "doc": sample["doc"],
+                "seed": sample["seed"],
+                "score_before": _score_of(sample["before"]),
+                "before_pos": _detect_positive(sample["before"]),
+            }
+            attempts = 0
+            started = time.monotonic()
+            chosen: dict[str, Any] | None = None
+            level_used: float | None = None
+            failed: str | None = None
+            for lvl in levels:
+                clears: list[dict[str, Any]] = []
+                for _ in range(max(1, a.level_attempts)):
+                    attempts += 1
+                    try:
+                        out_text, stats = self.rewrite(wm_text, "paraphrase", 1, rewrite_level=lvl)
+                    except RuntimeError as e:
+                        failed = str(e)
+                        break
+                    if not self._rewrite_cleared(stats, out_text):
+                        continue
+                    clears.append(
+                        {
+                            "out": out_text,
+                            "lex": _lexical_divergence(wm_text, out_text),
+                            "sem": self.semantic.score(wm_text, out_text)
+                            if self.semantic
+                            else None,
+                        }
+                    )
+                if failed is not None:
+                    break
+                if clears:
+                    chosen = min(
+                        clears,
+                        key=lambda c: c["sem"] if c["sem"] is not None else float("inf"),
+                    )
+                    level_used = lvl
+                    break
+
+            row = {
+                **base,
+                "variant": "minimal",
+                "kind": "minimal",
+                "attempts": attempts,
+                "seconds": round(time.monotonic() - started, 3),
+            }
+            if failed is not None:
+                row.update(
+                    {
+                        "cleared": None,
+                        "level": lvl,
+                        "lexical_divergence": None,
+                        "semantic_divergence": None,
+                        "notes": [f"rewrite failed: {failed}"],
+                    }
+                )
+            elif chosen is None:
+                row.update(
+                    {
+                        "cleared": False,
+                        "level": levels[-1],
+                        "lexical_divergence": None,
+                        "semantic_divergence": None,
+                        "notes": ["not cleared at any level"],
+                    }
+                )
+            else:
+                row.update(
+                    {
+                        "cleared": True,
+                        "level": level_used,
+                        "lexical_divergence": chosen["lex"],
+                        "semantic_divergence": chosen["sem"],
+                        "notes": [],
+                    }
+                )
+            rows.append(row)
+        return rows
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +1223,21 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
             "mean_lexical_divergence": round(_mean([q["lexical_divergence"] for q in quals]), 4)
             if quals
             else None,
+            "semantic_n": sum(1 for q in quals if q.get("semantic_divergence") is not None),
+            "mean_semantic_divergence": (
+                round(
+                    _mean(
+                        [
+                            q["semantic_divergence"]
+                            for q in quals
+                            if q.get("semantic_divergence") is not None
+                        ]
+                    ),
+                    4,
+                )
+                if any(q.get("semantic_divergence") is not None for q in quals)
+                else None
+            ),
             "mean_length_ratio": round(_mean([q["length_ratio"] for q in quals]), 4)
             if quals
             else None,
@@ -1048,6 +1260,31 @@ def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> di
         }
         out[variant] = entries
     return out
+
+
+def aggregate_minimal(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate the minimal-rewrite-level search rows across samples."""
+    evaluated = [r for r in rows if r.get("cleared") is not None]
+    cleared = [r for r in evaluated if r["cleared"] is True]
+    levels = [r["level"] for r in cleared if r.get("level") is not None]
+    sems = [r["semantic_divergence"] for r in cleared if r.get("semantic_divergence") is not None]
+    lexes = [r["lexical_divergence"] for r in cleared if r.get("lexical_divergence") is not None]
+    usage: dict[float, int] = {}
+    for r in cleared:
+        if r.get("level") is not None:
+            usage[r["level"]] = usage.get(r["level"], 0) + 1
+    n = len(evaluated)
+    return {
+        "n_samples": n,
+        "n_cleared": len(cleared),
+        "clear_rate": round(len(cleared) / n, 4) if n else None,
+        "mean_min_level": round(_mean(levels), 4) if levels else None,
+        "median_min_level": round(sorted(levels)[len(levels) // 2], 4) if levels else None,
+        "mean_min_semantic_divergence": round(_mean(sems), 4) if sems else None,
+        "median_min_semantic_divergence": round(sorted(sems)[len(sems) // 2], 4) if sems else None,
+        "mean_min_lexical_divergence": round(_mean(lexes), 4) if lexes else None,
+        "level_usage": list(usage.items()),
+    }
 
 
 def _fmt(value: Any, default: str = "—") -> str:
@@ -1093,20 +1330,28 @@ def render_markdown(
         "text."
     )
     L.append("")
+    L.append(
+        "**Semantic divergence:** `1 - cosine(embed(original), embed(candidate))` "
+        f"via sentence-transformers (model: {config.get('semantic_model') or 'not configured'}). "
+        "Optional: when the package/model is unavailable the metric is None and the "
+        "column renders '—'."
+    )
+    L.append("")
     L.append("## Results (per variant)")
     L.append("")
     L.append(
-        "| Variant | n | clear % | Δscore μ | lex div | len ratio | nums keep | tok out | att | s/doc | clears/MTok |"
+        "| Variant | n | clear % | Δscore μ | lex div | sem div | len ratio | nums keep | tok out | att | s/doc | clears/MTok |"
     )
-    L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for variant, a in agg.items():
         L.append(
-            "| {v} | {n} | {cr} | {d} | {ld} | {lr} | {np} | {to} | {att} | {s} | {eff} |".format(
+            "| {v} | {n} | {cr} | {d} | {ld} | {sd} | {lr} | {np} | {to} | {att} | {s} | {eff} |".format(
                 v=variant,
                 n=a["n"],
                 cr=_fmt(a["clear_rate"]),
                 d=_fmt(a["mean_score_delta"]),
                 ld=_fmt(a["mean_lexical_divergence"]),
+                sd=_fmt(a.get("mean_semantic_divergence")),
                 lr=_fmt(a["mean_length_ratio"]),
                 np=_fmt(a["mean_numbers_preserved"]),
                 to=_fmt(a["mean_tokens_out"]),
@@ -1147,6 +1392,115 @@ def render_markdown(
     return "\n".join(L) + "\n"
 
 
+def render_markdown_minimal(
+    config: dict[str, Any],
+    samples: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    agg: dict[str, Any],
+) -> str:
+    L: list[str] = []
+    L.append(f"# SynthID-text minimal-rewrite-level benchmark — {config['tag']}")
+    L.append("")
+    L.append(f"- Date: {config['timestamp']}")
+    L.append(f"- watermarks-remover commit: {config.get('repo_commit') or 'unknown'}")
+    L.append(f"- MarkLLM commit: {config.get('markllm_commit') or 'unknown'}")
+    L.append(f"- Generator/detector model: {config['markllm_model']}")
+    L.append(f"- Corpus: {config['corpus']} ({config['docs']} docs x {config['seeds']} seeds)")
+    L.append(
+        f"- Rewrite level range: {config['rewrite_level_start']} → {config['rewrite_level_max']} "
+        f"by {config['rewrite_level_step']} ({config['level_attempts']} attempts/level)"
+    )
+    L.append(f"- Semantic model: {config.get('semantic_model') or 'not configured'}")
+    L.append("")
+    L.append("## Methodology")
+    L.append("")
+    L.append(
+        "For each watermarked sample the benchmark starts at the lowest rewrite "
+        "level and raises it by 0.1 per loop until a rewrite is no longer "
+        "watermarked (same-config MarkLLM detection). The chosen rewrite is the "
+        "one with the smallest semantic divergence among the clearing attempts at "
+        "that level; that level's value and the resulting lexical/semantic "
+        "divergence are recorded. Samples that never clear are excluded from the "
+        "divergence average but counted in the clear rate."
+    )
+    L.append("")
+    L.append("## Results (across samples)")
+    L.append("")
+    L.append("| Metric | Value |")
+    L.append("| --- | --- |")
+    L.append(f"| Samples evaluated | {agg['n_samples']} |")
+    L.append(f"| Cleared | {agg['n_cleared']} |")
+    L.append(f"| Clear rate | {_fmt(agg['clear_rate'])} |")
+    L.append(f"| Mean minimal level | {_fmt(agg['mean_min_level'])} |")
+    L.append(f"| Median minimal level | {_fmt(agg['median_min_level'])} |")
+    L.append(f"| Mean minimal semantic divergence | {_fmt(agg['mean_min_semantic_divergence'])} |")
+    L.append(
+        f"| Median minimal semantic divergence | {_fmt(agg['median_min_semantic_divergence'])} |"
+    )
+    L.append(f"| Mean minimal lexical divergence | {_fmt(agg['mean_min_lexical_divergence'])} |")
+    L.append("")
+    L.append("### Level usage (minimal level per cleared sample)")
+    L.append("")
+    L.append("| Level | samples |")
+    L.append("| --- | ---: |")
+    for level, count in agg.get("level_usage") or []:
+        L.append(f"| {_fmt(level)} | {count} |")
+    L.append("")
+    L.append("## Per-sample rows")
+    L.append("")
+    L.append("| doc | seed | cleared | level | lex div | sem div | attempts |")
+    L.append("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    for r in rows:
+        L.append(
+            "| {doc} | {seed} | {cleared} | {lv} | {ld} | {sd} | {att} |".format(
+                doc=r["doc"],
+                seed=r["seed"],
+                cleared="yes" if r.get("cleared") else ("no" if r.get("cleared") is False else "—"),
+                lv=_fmt(r.get("level")),
+                ld=_fmt(r.get("lexical_divergence")),
+                sd=_fmt(r.get("semantic_divergence")),
+                att=r.get("attempts"),
+            )
+        )
+    L.append("")
+    L.append("## Reproduction")
+    L.append("")
+    L.append("    " + config["command"])
+    L.append("")
+    L.append("Full per-row data: results.json / results.csv in this directory.")
+    L.append("")
+    return "\n".join(L) + "\n"
+
+
+def _minimal_csv(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "doc,seed,variant,kind,cleared,before_pos,score_before,level,"
+        "lexical_divergence,semantic_divergence,attempts,seconds,notes"
+    ]
+    for r in rows:
+        lines.append(
+            ",".join(
+                str(v)
+                for v in (
+                    r["doc"],
+                    r["seed"],
+                    "minimal",
+                    "minimal",
+                    "" if r.get("cleared") is None else (1 if r["cleared"] else 0),
+                    1 if r.get("before_pos") else 0,
+                    r.get("score_before", ""),
+                    r.get("level", ""),
+                    r.get("lexical_divergence", ""),
+                    r.get("semantic_divergence", ""),
+                    r.get("attempts", ""),
+                    r.get("seconds", ""),
+                    "; ".join(str(n) for n in r.get("notes") or []),
+                )
+            )
+        )
+    return lines
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--markllm-dir", default=os.environ.get("MARKLLM_DIR"))
@@ -1176,6 +1530,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma list of <strength>:<candidates> (default: paraphrase:3). "
         "candidates = max rewrite attempts per input; the Layer B loop stops "
         "early when an attempt passes evaluation.",
+    )
+    p.add_argument(
+        "--mode",
+        choices=("variants", "minimal"),
+        default="variants",
+        help="variants: run named-strength rewrite variants (default). minimal: "
+        "per sample, raise the numeric rewrite level (--rewrite-level-start, "
+        "+--rewrite-level-step) until a rewrite is no longer watermarked, then "
+        "report the average minimal level.",
     )
     p.add_argument(
         "--restamp-control", action="store_true", help="Also rewrite the unwatermarked control"
@@ -1220,7 +1583,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidates variants and stops when one passes (default: 1)",
     )
     p.add_argument(
+        "--rewrite-level-start",
+        type=float,
+        default=0.1,
+        help="minimal mode: first rewrite level tried (default: 0.1)",
+    )
+    p.add_argument(
+        "--rewrite-level-step",
+        type=float,
+        default=0.1,
+        help="minimal mode: level increment per loop (default: 0.1, so 0.1, 0.2, ...)",
+    )
+    p.add_argument(
+        "--rewrite-level-max",
+        type=float,
+        default=1.0,
+        help="minimal mode: highest rewrite level tried (default: 1.0)",
+    )
+    p.add_argument(
+        "--level-attempts",
+        type=int,
+        default=3,
+        help="minimal mode: rewrite attempts per level before escalating (default: 3)",
+    )
+    p.add_argument(
         "--chars-per-token", type=float, default=4.0, help="Cost token estimate (default: 4.0)"
+    )
+    p.add_argument(
+        "--semantic-model",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        help="SentenceTransformer model for semantic divergence (optional; "
+        "requires sentence-transformers. Unavailable -> semantic_divergence is "
+        "None and the report renders '—').",
     )
     p.add_argument(
         "--cost-per-mtok-in", type=float, default=0.0, help="USD per million input tokens"
@@ -1289,6 +1683,12 @@ def main() -> int:
         "chars_per_token": args.chars_per_token,
         "cost_per_mtok_in": args.cost_per_mtok_in,
         "cost_per_mtok_out": args.cost_per_mtok_out,
+        "mode": args.mode,
+        "rewrite_level_start": args.rewrite_level_start,
+        "rewrite_level_step": args.rewrite_level_step,
+        "rewrite_level_max": args.rewrite_level_max,
+        "level_attempts": args.level_attempts,
+        "semantic_model": args.semantic_model,
         "command": " ".join(
             [
                 "python3 service/scripts/bench_synthid_text.py",
@@ -1298,12 +1698,18 @@ def main() -> int:
                 f"--corpus {args.corpus}",
                 f"--docs {args.docs} --seeds {args.seeds} --seed-base {args.seed_base}",
                 f"--max-new-tokens {args.max_new_tokens}",
+                f"--mode {args.mode}",
                 f"--variants {args.variants}",
                 f"--rewrite-backend {args.rewrite_backend}",
                 f"--rewrite-model {args.rewrite_model}",
                 f"--rewrite-base-url {args.rewrite_base_url}",
                 f"--rewrite-temperature {args.rewrite_temperature}",
                 f"--rewrite-loops {args.rewrite_loops}",
+                f"--rewrite-level-start {args.rewrite_level_start}",
+                f"--rewrite-level-step {args.rewrite_level_step}",
+                f"--rewrite-level-max {args.rewrite_level_max}",
+                f"--level-attempts {args.level_attempts}",
+                f"--semantic-model {args.semantic_model}",
                 *(["--restamp-control"] if args.restamp_control else []),
                 *(["--rewrite-allow-remote"] if args.rewrite_allow_remote else []),
                 f"--out-dir {args.out_dir}",
@@ -1320,63 +1726,72 @@ def main() -> int:
     eprint(f"markllm via: {bench.python}")
     try:
         samples = bench.generate_samples(workdir)
-        rows = bench.run_variants(samples, workdir)
+        if args.mode == "minimal":
+            rows = bench.minimal_search(samples, workdir)
+        else:
+            rows = bench.run_variants(samples, workdir)
     finally:
         bench.close_worker()
 
-    # Attach USD cost using per-doc token estimates.
-    for row in rows:
-        q = row.get("quality") or {}
-        if q:
-            row["usd"] = (
-                q.get("tokens_in", 0) / 1e6 * args.cost_per_mtok_in
-                + q.get("tokens_out", 0) / 1e6 * args.cost_per_mtok_out
+    if args.mode == "minimal":
+        agg = aggregate_minimal(rows)
+        report = render_markdown_minimal(config, samples, rows, agg)
+        csv_lines = _minimal_csv(rows)
+    else:
+        # Attach USD cost using per-doc token estimates.
+        for row in rows:
+            q = row.get("quality") or {}
+            if q:
+                row["usd"] = (
+                    q.get("tokens_in", 0) / 1e6 * args.cost_per_mtok_in
+                    + q.get("tokens_out", 0) / 1e6 * args.cost_per_mtok_out
+                )
+
+        agg = aggregate(rows, bench.variants)
+
+        report = render_markdown(config, samples, rows, agg)
+        csv_lines = [
+            "doc,seed,variant,kind,attempts,evaluator,passed,before_pos,after_pos,cleared,"
+            "score_before,score_after,score_delta,lexical_divergence,semantic_divergence,"
+            "length_ratio,numbers_preserved,urls_preserved,tokens_in,tokens_out,seconds,usd,notes"
+        ]
+        for r in rows:
+            q = r.get("quality") or {}
+            delta = (
+                round(r["score_before"] - r["score_after"], 4)
+                if r.get("score_before") is not None and r.get("score_after") is not None
+                else ""
             )
-
-    agg = aggregate(rows, bench.variants)
-
-    report = render_markdown(config, samples, rows, agg)
-    csv_lines = [
-        "doc,seed,variant,kind,attempts,evaluator,passed,before_pos,after_pos,cleared,"
-        "score_before,score_after,score_delta,lexical_divergence,length_ratio,"
-        "numbers_preserved,urls_preserved,tokens_in,tokens_out,seconds,usd,notes"
-    ]
-    for r in rows:
-        q = r.get("quality") or {}
-        delta = (
-            round(r["score_before"] - r["score_after"], 4)
-            if r.get("score_before") is not None and r.get("score_after") is not None
-            else ""
-        )
-        csv_lines.append(
-            ",".join(
-                str(v)
-                for v in (
-                    r["doc"],
-                    r["seed"],
-                    r["variant"],
-                    r.get("kind", ""),
-                    r.get("attempts", ""),
-                    r.get("evaluator", ""),
-                    "" if r.get("passed") is None else (1 if r["passed"] else 0),
-                    1 if r.get("before_pos") else 0,
-                    1 if r.get("after_pos") else 0,
-                    "" if r.get("cleared") is None else (1 if r["cleared"] else 0),
-                    r.get("score_before", ""),
-                    r.get("score_after", ""),
-                    delta,
-                    q.get("lexical_divergence", ""),
-                    q.get("length_ratio", ""),
-                    q.get("numbers_preserved", ""),
-                    q.get("urls_preserved", ""),
-                    q.get("tokens_in", ""),
-                    q.get("tokens_out", ""),
-                    r.get("seconds", ""),
-                    round(r.get("usd") or 0.0, 6),
-                    "; ".join(str(n) for n in r.get("notes") or []),
+            csv_lines.append(
+                ",".join(
+                    str(v)
+                    for v in (
+                        r["doc"],
+                        r["seed"],
+                        r["variant"],
+                        r.get("kind", ""),
+                        r.get("attempts", ""),
+                        r.get("evaluator", ""),
+                        "" if r.get("passed") is None else (1 if r["passed"] else 0),
+                        1 if r.get("before_pos") else 0,
+                        1 if r.get("after_pos") else 0,
+                        "" if r.get("cleared") is None else (1 if r["cleared"] else 0),
+                        r.get("score_before", ""),
+                        r.get("score_after", ""),
+                        delta,
+                        q.get("lexical_divergence", ""),
+                        q.get("semantic_divergence", ""),
+                        q.get("length_ratio", ""),
+                        q.get("numbers_preserved", ""),
+                        q.get("urls_preserved", ""),
+                        q.get("tokens_in", ""),
+                        q.get("tokens_out", ""),
+                        r.get("seconds", ""),
+                        round(r.get("usd") or 0.0, 6),
+                        "; ".join(str(n) for n in r.get("notes") or []),
+                    )
                 )
             )
-        )
 
     (out_dir / "report.md").write_text(report, encoding="utf-8")
     (out_dir / "results.json").write_text(
@@ -1388,16 +1803,29 @@ def main() -> int:
     eprint("")
     eprint(f"results written to {out_dir}/")
     print("")
-    print("variant          n   clear%  dScore  lexDiv  lenR  nums  tokOut  att  s/doc  eff/MTok")
-    print("-" * 82)
-    for variant, a in agg.items():
+    if args.mode == "minimal":
+        print("minimal rewrite level (across samples)")
+        print("-" * 40)
+        print(f"  samples evaluated : {agg['n_samples']}")
+        print(f"  cleared           : {agg['n_cleared']}")
+        print(f"  clear rate        : {_fmt(agg['clear_rate'])}")
+        print(f"  mean minimal level: {_fmt(agg['mean_min_level'])}")
+        print(f"  mean min sem div  : {_fmt(agg['mean_min_semantic_divergence'])}")
+        print(f"  mean min lex div  : {_fmt(agg['mean_min_lexical_divergence'])}")
+    else:
         print(
-            f"{variant:<16} {a['n']:>3}  {_fmt(a['clear_rate']):>6}  "
-            f"{_fmt(a['mean_score_delta']):>6}  {_fmt(a['mean_lexical_divergence']):>6}  "
-            f"{_fmt(a['mean_length_ratio']):>5}  {_fmt(a['mean_numbers_preserved']):>5}  "
-            f"{_fmt(a['mean_tokens_out']):>6}  {_fmt(a.get('mean_attempts')):>4}  "
-            f"{_fmt(a['mean_seconds']):>5}  {_fmt(a['clears_per_mtok_out']):>7}"
+            "variant          n   clear%  dScore  lexDiv  semDiv  lenR  nums  tokOut  att  s/doc  eff/MTok"
         )
+        print("-" * 92)
+        for variant, a in agg.items():
+            print(
+                f"{variant:<16} {a['n']:>3}  {_fmt(a['clear_rate']):>6}  "
+                f"{_fmt(a['mean_score_delta']):>6}  {_fmt(a['mean_lexical_divergence']):>6}  "
+                f"{_fmt(a.get('mean_semantic_divergence')):>6}  "
+                f"{_fmt(a['mean_length_ratio']):>5}  {_fmt(a['mean_numbers_preserved']):>5}  "
+                f"{_fmt(a['mean_tokens_out']):>6}  {_fmt(a.get('mean_attempts')):>4}  "
+                f"{_fmt(a['mean_seconds']):>5}  {_fmt(a['clears_per_mtok_out']):>7}"
+            )
     return 0
 
 

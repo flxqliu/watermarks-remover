@@ -11,11 +11,23 @@ removal variants, and emits a shareable report.
 | --- | --- |
 | Clear rate | % of watermarked samples that flip to not-watermarked after removal (MarkLLM same-config detection) |
 | Score suppression | mean/median drop in detector score (before - after) |
-| Quality | lexical divergence (bigram Jaccard distance), length drift, number/URL survival |
+| Quality | lexical divergence (bigram Jaccard distance), semantic divergence (1 - cosine similarity via sentence-transformers), length drift, number/URL survival |
 | Cost | estimated tokens in/out, wall time per document, optional USD at your prices |
 | Efficiency | clears per million output tokens - removal rate per unit of rewrite cost |
 | Attempts | mean rewrite attempts per document (the Layer B loop stops early on pass) |
 | Controls | Layer A only (expect ~0% - Unicode scrub must not clear a statistical mark), sanity-gate exclusions, optional re-stamp check |
+
+**Semantic divergence** is `1 - cosine(embed(original), embed(candidate))`
+using a SentenceTransformer (default `sentence-transformers/all-MiniLM-L6-v2`).
+It is opt-in: if `sentence-transformers` is not installed the metric is
+`None` and renders as `—` in the report/CSV. Install it into the MarkLLM venv
+to enable the column:
+
+    ~/MarkLLM/.venv/bin/pip install -r service/scripts/requirements-semantic.txt
+
+It is `1 - cosine`, so it measures meaning drift independently of surface
+wording: lexical divergence can be high (many different words) while semantic
+divergence is low (same meaning), and vice versa.
 
 ## How to run
 
@@ -65,6 +77,44 @@ count, and paraphrase:3 means "try up to 3 variants, stop on the first pass"
 (raise `--rewrite-loops` to keep retrying new variants until one passes).
 The report's att column (and mean_attempts in results.json / attempts in
 results.csv) records the actual attempts per document.
+
+## Minimal-rewrite-level mode (`--mode minimal`)
+
+The named-strength variants above answer "does this rewrite remove the mark?"
+The minimal mode answers **"what is the smallest rewrite that removes the
+mark?"** for a given sample, then aggregates that minimum across samples.
+
+- It uses a **numeric rewrite level** instead of a named strength. The level is
+  a request in `(0, 1]`: 0 (the unchanged original) is excluded, 1 means
+  "rewrite everything". The actual lexical/semantic divergence of the output is
+  *measured*, not guaranteed — the level is a prompt, not a contract.
+- For each watermarked sample it starts at `--rewrite-level-start` (0.1),
+  tries up to `--level-attempts` (3) rewrites at that level, and if none
+  clears the mark it raises the level by `--rewrite-level-step` (0.1) and
+  repeats, up to `--rewrite-level-max` (1.0).
+- At the first level where at least one rewrite clears (same-config MarkLLM
+  detection), it keeps the rewrite with the **smallest semantic divergence**
+  and records that level. One row per sample records the chosen level, its
+  lexical/semantic divergence, and the attempts spent.
+- `aggregate_minimal` reports across samples: clear rate, mean/median minimal
+  level, mean/median minimal semantic divergence, mean minimal lexical
+  divergence, and a level-usage histogram.
+
+    python3 service/scripts/bench_synthid_text.py \
+      --markllm-dir ~/MarkLLM \
+      --mode minimal \
+      --docs 10 --seeds 3 \
+      --rewrite-level-start 0.1 --rewrite-level-step 0.1 --rewrite-level-max 1.0 \
+      --level-attempts 3 \
+      --rewrite-backend ollama --rewrite-model llama3.2 \
+      --out-dir out/bench-minimal --tag minimal
+
+**Verdict semantics per sample:** a row is `cleared` (True) when a rewrite at
+some level is no longer detected watermarked; `cleared=False` when no level up
+to the max cleared it (the sample counts in the clear-rate denominator but is
+excluded from the divergence averages); `cleared=None` when the rewrite failed
+or MarkLLM verification was unavailable (also excluded from averages). Only
+cleared samples contribute to the mean/median minimal level and divergence.
 
 Cost warning: with MarkLLM as the evaluator, each attempt also costs one
 MarkLLM detection — up to (candidates x loops) detections per input. The

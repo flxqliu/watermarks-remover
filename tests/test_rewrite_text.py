@@ -64,6 +64,33 @@ def test_build_prompt_unknown_strength_raises():
         build_prompt("nope", "ABC", lang="French", original_lang="English")
 
 
+def test_build_prompt_level_embeds_level():
+    p = build_prompt(
+        "paraphrase", "Hello 42.", lang="French", original_lang="English", rewrite_level=0.3
+    )
+    assert "Hello 42." in p
+    assert "0.30" in p
+    # level prompt is not the regular paraphrase prompt
+    assert "clause order" not in p
+
+
+def test_rewrite_level_takes_precedence_over_strength():
+    out, info = rewrite(
+        "Sample prose about water marks 42.",
+        **_rewrite_kwargs(strength="paraphrase", rewrite_level=0.4),
+    )
+    assert info["mode"] == "print-prompt"
+    assert info["strength"] == "paraphrase"
+    assert info["rewrite_level"] == 0.4
+    assert "0.40" in out
+    assert "clause order" not in out
+
+
+def test_rewrite_level_out_of_range_rejected(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["rewrite_text.py", "--rewrite-level", "0", "x.txt"])
+    assert rewrite_text.main() == 2
+
+
 def test_print_prompt_backend():
     out, info = rewrite("Sample prose about water marks.", **_rewrite_kwargs())
     assert info["mode"] == "print-prompt"
