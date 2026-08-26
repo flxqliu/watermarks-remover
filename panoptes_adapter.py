@@ -19,8 +19,12 @@ returns a rewrite prompt, not cleaned text.
 
 Sandbox note: Panoptes evaluate-repo scrubs env vars containing API_KEY /
 TOKEN / etc. before running an adapter, so WATERMARKS_REWRITE_API_KEY never
-reaches this process there — under evaluate-repo, Layer B is limited to
-loopback backends that need no key (e.g. a local Ollama).
+reaches this process there and keyed remote backends cannot authenticate.
+Layer B defaults to a loopback backend (local Ollama); setting
+WATERMARKS_REWRITE_ALLOW_REMOTE=1 permits a keyless non-loopback backend to
+receive evaluated text even under evaluate-repo — that variable is not a
+credential and is not scrubbed. evaluate-repo only disables networking
+entirely when the caller passes --docker.
 """
 
 from __future__ import annotations

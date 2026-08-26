@@ -46,12 +46,15 @@ Layer B reads the same `WATERMARKS_REWRITE_*` variables as
 `rewrite_text.py` (see `.env.example`). The CLI's `print-prompt` backend is
 rejected in the adapter — it returns a prompt, not cleaned text.
 
-**Sandbox caveat:** `evaluate-repo` scrubs env vars containing
-`API_KEY`/`TOKEN`/etc. before running an adapter, so
-`WATERMARKS_REWRITE_API_KEY` never reaches the adapter subprocess. Under
-`evaluate-repo`, Layer B is limited to loopback backends that need no key
-(e.g. a local Ollama). For keyed remote backends, run the SynthID-text
-benchmark (`docs/synthid-text-benchmark.md`) instead.
+**Sandbox caveat:** Layer B defaults to a loopback backend (a local
+Ollama). `evaluate-repo` scrubs env vars containing `API_KEY`/`TOKEN`/etc.
+before running an adapter, so `WATERMARKS_REWRITE_API_KEY` never reaches the
+adapter subprocess and keyed remote backends cannot authenticate there.
+However, `WATERMARKS_REWRITE_ALLOW_REMOTE=1` is not a credential variable
+and survives scrubbing — a *keyless* non-loopback backend can still receive
+evaluated text under `evaluate-repo`. Networking is only disabled entirely
+when the caller passes `--docker`. For keyed remote backends, run the
+SynthID-text benchmark (`docs/synthid-text-benchmark.md`) instead.
 
 ## Security
 

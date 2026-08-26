@@ -8,5 +8,5 @@
     "callable": "transform"
   },
   "requires_network": false,
-  "notes": "Native Panoptes adapter (see docs/panoptes-adapter.md). Default: deterministic Layer A Unicode hygiene — no network, model, or API key. Opt-in Layer B statistical rewrite via WATERMARKS_REMOVER_ADAPTER_LAYER_B=1, configured through the WATERMARKS_REWRITE_* env vars; note that Panoptes evaluate-repo scrubs env vars containing API_KEY/TOKEN before running an adapter, so Layer B there is limited to loopback backends that need no key."
+  "notes": "Native Panoptes adapter (see docs/panoptes-adapter.md). Default: deterministic Layer A Unicode hygiene — no network, model, or API key. Opt-in Layer B statistical rewrite via WATERMARKS_REMOVER_ADAPTER_LAYER_B=1, configured through the WATERMARKS_REWRITE_* env vars. Layer B defaults to a loopback backend (local Ollama). Under Panoptes evaluate-repo, env vars containing API_KEY/TOKEN are scrubbed before the adapter runs, so keyed remote backends cannot authenticate there — but WATERMARKS_REWRITE_ALLOW_REMOTE=1 is not a credential variable and survives scrubbing, so a keyless remote backend can still receive evaluated text. evaluate-repo does not disable networking unless the caller passes --docker."
 }
