@@ -157,7 +157,7 @@ def test_clean_staged_modified_image_report_exits_1(tmp_path, monkeypatch, capsy
         "still_has_c2pa": False,
         "still_has_ai_metadata": False,
     }
-    _fake_clean_file(monkeypatch, 0, stdout=json.dumps(report))
+    _fake_clean_file(monkeypatch, 0, stdout=json.dumps(report), mutate_file=f)
     monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
     assert clean_staged.main() == 1
     assert "cleaned 1 file(s)" in capsys.readouterr().err
@@ -189,7 +189,7 @@ def test_clean_staged_same_length_pdf_report_exits_1(tmp_path, monkeypatch, caps
         "still_has_c2pa": False,
         "still_has_ai_metadata": False,
     }
-    _fake_clean_file(monkeypatch, 0, stdout=json.dumps(report))
+    _fake_clean_file(monkeypatch, 0, stdout=json.dumps(report), mutate_file=f)
     monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
     assert clean_staged.main() == 1
     assert "cleaned 1 file(s)" in capsys.readouterr().err
@@ -279,13 +279,21 @@ def _staged_file(tmp_path: Path) -> Path:
     return f
 
 
-def _fake_clean_file(monkeypatch, returncode: int, stdout: str = "", stderr: str = "") -> None:
+def _fake_clean_file(
+    monkeypatch,
+    returncode: int,
+    stdout: str = "",
+    stderr: str = "",
+    mutate_file: Path | None = None,
+) -> None:
     """Pin the clean_file.py subprocess to one outcome without running it."""
-    monkeypatch.setattr(
-        clean_staged.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], returncode, stdout=stdout, stderr=stderr),
-    )
+
+    def fake_run(cmd, *a, **k):
+        if mutate_file is not None:
+            mutate_file.write_bytes(b"modified by cleaner subprocess")
+        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(clean_staged.subprocess, "run", fake_run)
 
 
 def test_clean_staged_crashed_cleaner_exits_partial(tmp_path, monkeypatch, capsys):
@@ -350,12 +358,28 @@ def test_clean_staged_residual_signals_are_not_a_failure(tmp_path, monkeypatch, 
     # of its report would turn every one of those into a hook failure.
     f = _staged_file(tmp_path)
     report = {"kind": "image", "actions": ["strip xmp"], "still_has_c2pa": True}
-    _fake_clean_file(monkeypatch, 1, stdout=json.dumps(report))
+    _fake_clean_file(monkeypatch, 1, stdout=json.dumps(report), mutate_file=f)
     monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
     assert clean_staged.main() == 1
     err = capsys.readouterr().err
     assert "cleaned 1 file(s) in place" in err
     assert "could not be cleaned" not in err
+
+
+def test_clean_staged_changed_fallback_helper():
+    """_changed() evaluates reports directly when before/after digests cannot be computed."""
+    assert clean_staged._changed({"stats": {"removed_count": 2, "replaced_count": 0}})
+    assert clean_staged._changed({"stats": {"removed_count": 0, "replaced_count": 1}})
+    assert not clean_staged._changed({"stats": {"removed_count": 0, "replaced_count": 0}})
+    assert clean_staged._changed({"bytes_in": 1200, "bytes_out": 200})
+    assert clean_staged._changed({"actions": ["strip PNG c2pa chunk (jumb)"]})
+    assert clean_staged._changed({"actions": ["blanked XMP xpacket x1"]})
+    assert not clean_staged._changed(
+        {"actions": ["no PNG metadata chunks removed (already clean or none matched)"]}
+    )
+    assert not clean_staged._changed({"actions": ["warning: exiftool failed"]})
+    assert not clean_staged._changed({"actions": ["deep image pass not needed"]})
+    assert not clean_staged._changed({"actions": ["kept 4 bytes of truncated tail"]})
 
 
 def test_clean_staged_failure_outranks_a_successful_clean(tmp_path, monkeypatch, capsys):

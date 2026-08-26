@@ -137,10 +137,10 @@ def _clean_one(path: Path) -> tuple[str, str]:
 
     after_digest = _file_digest(path)
 
-    disk_changed = (
-        before_digest is not None and after_digest is not None and before_digest != after_digest
-    )
-    status = "changed" if (disk_changed or _changed(result)) else "unchanged"
+    if before_digest is not None and after_digest is not None:
+        status = "changed" if before_digest != after_digest else "unchanged"
+    else:
+        status = "changed" if _changed(result) else "unchanged"
     return status, ""
 
 
