@@ -60,6 +60,7 @@ def _args(**overrides):
         no_worker=True,
         scheme="synthid",
         config=None,
+        cross_detect=None,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -109,6 +110,24 @@ def _rewrite_stats(cleared=True, evaluator="markllm", attempts_made=1, passed=Tr
         "output_chars": 100,
         "candidate_scores": [],
     }
+
+
+class _FakeCrossDetector:
+    """Deterministic stand-in for a --cross-detect second-opinion detector."""
+
+    name = "panoptes"
+
+    def available(self):
+        return True
+
+    def detect(self, text):
+        return {
+            "detector": self.name,
+            "available": True,
+            "is_watermarked": False,
+            "score": 0.05,
+            "ai_generation": 0.42,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +344,57 @@ def test_restamp_control_rows(tmp_path, monkeypatch):
     assert restamps[0]["after_pos"] in (True, False)
 
 
+def test_cross_detect_flag_parsing():
+    base = ["--markllm-dir", "x", "--rewrite-model", "m"]
+    assert bench.build_parser().parse_args(base).cross_detect is None
+    args = bench.build_parser().parse_args([*base, "--cross-detect", "panoptes"])
+    assert args.cross_detect == ["panoptes"]
+    with pytest.raises(SystemExit):
+        bench.build_parser().parse_args([*base, "--cross-detect", "bogus"])
+
+
+def test_cross_detect_populates_rows_and_aggregate(tmp_path, monkeypatch):
+    b, _ = _make_bench(
+        tmp_path, monkeypatch, docs=1, variants="paraphrase:1", cross_detect=["panoptes"]
+    )
+    monkeypatch.setattr(b, "cross", [_FakeCrossDetector()])
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    scored = [r for r in rows if r["kind"] in ("control", "layer-a", "rewrite")]
+    assert scored and all("cross" in r for r in scored)
+    assert all(r["cross"]["panoptes"]["ai_generation"] == 0.42 for r in scored)
+    agg = aggregate(rows, b.variants)
+    cross = agg["control"]["cross_panoptes"]
+    assert cross["n_available"] == 1
+    assert cross["kgw_positive"] == 0
+    assert cross["mean_ai_generation"] == 0.42
+
+
+def test_cross_detect_records_fail_soft(tmp_path, monkeypatch):
+    """With no Panoptes server reachable, rows record the reason — never crash."""
+    monkeypatch.delenv("PANOPTES_API_URL", raising=False)
+    b, _ = _make_bench(
+        tmp_path, monkeypatch, docs=1, variants="paraphrase:1", cross_detect=["panoptes"]
+    )
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    control = next(r for r in rows if r["kind"] == "control")
+    report = control["cross"]["panoptes"]
+    assert report["available"] is False
+    assert "PANOPTES_API_URL" in report["error"]
+    agg = aggregate(rows, b.variants)
+    assert agg["control"]["cross_panoptes"]["n_available"] == 0
+
+
+def test_cross_detect_off_leaves_rows_untouched(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    assert all("cross" not in r for r in rows)
+    agg = aggregate(rows, b.variants)
+    assert all(not k.startswith("cross_") for v in agg.values() for k in v)
+
+
 # ---------------------------------------------------------------------------
 # Outputs via main()
 # ---------------------------------------------------------------------------
@@ -337,6 +407,7 @@ class _FakeBench:
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
+        self.cross = [_FakeCrossDetector() for _ in (args.cross_detect or [])]
 
     def close_worker(self):
         pass
@@ -356,7 +427,7 @@ class _FakeBench:
         ]
 
     def run_variants(self, samples, workdir):
-        return [
+        rows = [
             {
                 "doc": "d1",
                 "seed": 1,
@@ -418,6 +489,10 @@ class _FakeBench:
                 "notes": [],
             },
         ]
+        for r in rows:
+            if self.cross:
+                r["cross"] = {d.name: d.detect("x") for d in self.cross}
+        return rows
 
 
 def test_main_writes_outputs(tmp_path, monkeypatch, capsys):
@@ -464,6 +539,58 @@ def test_main_writes_outputs(tmp_path, monkeypatch, capsys):
     csv = (out / "results.csv").read_text(encoding="utf-8")
     assert "doc,seed,variant" in csv
     assert "rewrite-paraphrase:1" in csv
+    # No --cross-detect: outputs keep the legacy shape (no cross columns/sections).
+    assert "cross_" not in csv.splitlines()[0]
+    assert "Cross-detector second opinion" not in report
+
+
+def test_main_cross_detect_extends_outputs(tmp_path, monkeypatch, capsys):
+    (tmp_path / "markllm" / "watermark").mkdir(parents=True)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "d1.txt").write_text("prompt", encoding="utf-8")
+    out = tmp_path / "out"
+    monkeypatch.setattr(bench, "Benchmark", _FakeBench)
+    monkeypatch.setattr(bench, "_repo_commit", lambda: "abc123")
+    monkeypatch.setattr(bench, "_markllm_commit", lambda upstream: "def456")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_synthid_text.py",
+            "--markllm-dir",
+            str(tmp_path / "markllm"),
+            "--corpus",
+            str(corpus),
+            "--docs",
+            "1",
+            "--rewrite-model",
+            "llama3.2",
+            "--variants",
+            "paraphrase:1",
+            "--cross-detect",
+            "panoptes",
+            "--out-dir",
+            str(out),
+            "--tag",
+            "ci-cross",
+        ],
+    )
+    assert bench.main() == 0
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "## Cross-detector second opinion: panoptes" in report
+    assert "demo key" in report  # KGW scoping caveat is rendered
+    assert "--cross-detect panoptes" in report  # reproduction command records the flag
+    csv = (out / "results.csv").read_text(encoding="utf-8")
+    header = csv.splitlines()[0]
+    assert header.endswith(",cross_panoptes_pos,cross_panoptes_score,cross_panoptes_ai")
+    rewrite_line = next(line for line in csv.splitlines() if "rewrite-paraphrase:1" in line)
+    assert rewrite_line.endswith(",0,0.05,0.42")  # pos=0, score, AI posterior
+    data = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert data["meta"]["cross_detect"] == ["panoptes"]
+    cross = data["aggregates"]["control"]["cross_panoptes"]
+    assert cross["n_available"] == 1
+    assert cross["mean_ai_generation"] == 0.42
 
 
 def test_main_requires_markllm_dir(tmp_path, monkeypatch, capsys):

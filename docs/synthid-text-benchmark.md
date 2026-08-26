@@ -83,6 +83,40 @@ chars / --chars-per-token estimates (default 4.0).
 - results.csv - one row per (doc, seed, variant) for plotting.
 - work/ - generated watermarked/unwatermarked samples (kept for inspection).
 
+## Cross-detector second opinion (--cross-detect)
+
+Same-config MarkLLM detection answers "did the mark survive under the config
+that made it?" It cannot answer "does the text still look machine-generated
+to an independent system?" — that needs a second opinion that shares no
+config, keys, or code with the generator:
+
+```bash
+PANOPTES_API_URL=http://127.0.0.1:8000 \
+python3 service/scripts/bench_synthid_text.py --markllm-dir ~/MarkLLM \
+  --rewrite-model llama3.2 --cross-detect panoptes
+```
+
+With `--cross-detect panoptes`, every row's output text is also POSTed to a
+[Panoptes](https://github.com/marketstandard/Panoptes) workbench
+(`panoptes up` serves the API on loopback). The report gains a
+"Cross-detector second opinion" section and results.csv gains
+`cross_panoptes_pos/score/ai` columns. Control rows double as the
+pre-removal baseline, so compare rewrite rows against control.
+
+What the tier proves and what it cannot:
+
+- The Panoptes KGW reading is scoped to Panoptes' baked **demo key** — it
+  detects only watermarks made with that key, so no true matches are
+  expected on this MarkLLM-generated corpus. A positive is not automatically
+  a benchmark bug: it warrants investigation (false positive, or the corpus
+  overlapping the demo key), not dismissal.
+- The calibrated **AI posterior** is the watermark-agnostic signal: a
+  rewrite that clears the mark but leaves the posterior pinned near 1.0 has
+  changed the mark, not the provenance signal.
+- Fail-soft like every detector here: an unreachable, slow, or malformed
+  Panoptes response is recorded per row (`available: false` + reason) and
+  never fails the run. `PANOPTES_TIMEOUT` overrides the 30s default.
+
 ## Running from Docker (compose)
 
 The `wr-markllm` service in compose.yaml can run the benchmark end-to-end
