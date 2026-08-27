@@ -62,7 +62,7 @@ from common import (
 )
 from container_meta import DEEP_IMAGE_MODES, clean_container, inspect_container
 from format_dispatch import classify_bytes
-from image_meta import clean_image, inspect_image, run_synthid_score
+from image_meta import clean_image, inspect_image, run_synthid_score, synthid_is_watermarked
 from score_stylometry import score_text_stylometry
 from text_detectors import detector_status, run_all_text_detectors, run_text_detectors
 from text_unicode import clean_text, inspect_text
@@ -701,11 +701,14 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
         entry.get("available") and entry.get("is_watermarked")
         for entry in report.get("text_detectors") or []
     )
+    synthid_wm = synthid_is_watermarked(report.get("synthid"))
+
     suspicious = (
         bool(report.get("suspicious_total"))
         or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
         or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
         or detected_wm
+        or synthid_wm
     )
     return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
 

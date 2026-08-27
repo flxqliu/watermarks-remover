@@ -277,8 +277,50 @@ def safe_write_text(path: str | Path, text: str) -> None:
     safe_write_bytes(path, text.encode("utf-8", errors="surrogateescape"))
 
 
-def backup_path(src: Path) -> Path:
-    """Create a ``.bak`` copy of *src* via a safe write; return the backup path.
+def is_mutating_action(action: str) -> bool:
+    """True if *action* describes an actual modification, False for informational notices."""
+    action_lower = action.strip().lower()
+    if (
+        action_lower.startswith("no ")
+        or action_lower.startswith("warning:")
+        or "not needed" in action_lower
+        or "skipped" in action_lower
+        or "preserved" in action_lower
+        or "already clean" in action_lower
+        or "none matched" in action_lower
+        or "available for inspect" in action_lower
+        or "failed" in action_lower
+        or "left unchanged" in action_lower
+        or "kept" in action_lower
+        or "copied remainder" in action_lower
+    ):
+        return False
+    return not action_lower.startswith("layer a text: removed=0 replaced=0")
+
+
+def result_has_changes(result: dict[str, Any]) -> bool:
+    """True if a clean operation modified the content."""
+    if "changed" in result:
+        return bool(result["changed"])
+    stats = result.get("stats")
+    if stats is not None:
+        return bool(stats.get("removed_count") or stats.get("replaced_count"))
+    inp = result.get("input")
+    out = result.get("output")
+    if inp and out:
+        p_in = Path(inp)
+        p_out = Path(out)
+        if p_in.is_file() and p_out.is_file():
+            try:
+                return p_in.read_bytes() != p_out.read_bytes()
+            except OSError:
+                pass
+    actions = result.get("actions", [])
+    return any(is_mutating_action(a) for a in actions)
+
+
+def backup_path(src: Path) -> tuple[Path, bool]:
+    """Create a ``.bak`` copy of *src* via a safe write; return (backup path, created).
 
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically

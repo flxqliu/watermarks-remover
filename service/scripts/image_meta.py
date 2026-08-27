@@ -1721,6 +1721,16 @@ def run_ctrlregen_clean(
     return payload
 
 
+def synthid_is_watermarked(entry: dict[str, Any] | None) -> bool:
+    """True if *entry* indicates an affirmative SynthID watermark detection."""
+    if not entry or not entry.get("available"):
+        return False
+    if entry.get("is_watermarked"):
+        return True
+    confidence = entry.get("confidence")
+    return confidence is not None and confidence >= 0.5
+
+
 def inspect_image(
     path: Path,
     synthid_dir: str | None = None,
@@ -1764,6 +1774,14 @@ def inspect_image(
     if probe_note:
         notes.append(probe_note)
 
+    synthid_rep = run_synthid_score(path, synthid_dir)
+    if synthid_rep:
+        if synthid_is_watermarked(synthid_rep):
+            conf = synthid_rep.get("confidence", 0.0)
+            findings.append(f"SynthID pixel watermark detected (confidence={conf:.3f})")
+        elif synthid_rep.get("error"):
+            findings.append(f"SynthID scorer inconclusive: {synthid_rep['error']}")
+
     return ImageInspectReport(
         path=str(path),
         format=fmt,
@@ -1771,7 +1789,7 @@ def inspect_image(
         has_ai_metadata=has_ai,
         findings=findings,
         tools=tools,
-        synthid=run_synthid_score(path, synthid_dir),
+        synthid=synthid_rep,
         notes=notes,
     )
 
